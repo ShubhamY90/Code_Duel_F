@@ -1,70 +1,79 @@
 /**
- * useProblem — Problem data fetching hook
+ * useProblem — fetches a problem from the backend API
  *
- * HOW TO WIRE UP YOUR DB:
- * ─────────────────────────────────────────────────────────────────
- * Replace the TODO block below with a real fetch call, e.g.:
+ * - If problemId is provided → GET /api/problems/:problemId
+ * - If problemId is null/undefined → GET /api/problems/random
  *
- *   const res = await fetch(`/api/problems/${problemId}`);
- *   const data = await res.json();
- *   setProblem(data);
+ * hiddenTestCases are NEVER returned by the backend.
  *
- * The shape your API must return:
+ * Returned shape:
  * {
- *   id:          string | number,
- *   title:       string,
- *   difficulty:  'Easy' | 'Medium' | 'Hard',
- *   topic:       string,
- *   description: string,          // plain text / markdown
- *   examples: [
- *     { input: string, output: string, explain?: string }
- *   ],
- *   constraints: string[],
- *   starterCode: {
- *     javascript: string,
- *     python:     string,
- *     java:       string,
- *   },
- *   visibleTestCases: [           // shown to user in UI
- *     { label: string, input: string, output: string }
- *   ],
- *   // hiddenTestCases live in Judge0 — NOT returned to client
+ *   id, title, difficulty, rating, topic,
+ *   description, constraints, inputFormat, outputFormat,
+ *   sampleTestCases: [{ input, output, explanation? }]
  * }
- * ─────────────────────────────────────────────────────────────────
  */
 
 import { useState, useEffect } from 'react';
 
+const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:4000';
+
 /**
- * @param {string|number|null} problemId  - pass null to keep loading
+ * @param {string|null|undefined} problemId  — pass null/undefined for a random problem
  * @returns {{ problem: object|null, loading: boolean, error: string|null }}
  */
 export function useProblem(problemId) {
-  // eslint-disable-next-line no-unused-vars
   const [problem, setProblem] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError]     = useState(null);
 
   useEffect(() => {
-    if (problemId == null) return; // waiting for room assignment
+    let cancelled = false;
 
-    setLoading(true);
-    setError(null);
+    async function fetchProblem() {
+      setLoading(true);
+      setError(null);
+      setProblem(null);
 
-    // ── TODO: replace with real API call ──────────────────────────
-    // Example:
-    //   fetch(`/api/problems/${problemId}`)
-    //     .then(r => r.json())
-    //     .then(data => { setProblem(data); setLoading(false); })
-    //     .catch(err => { setError(err.message); setLoading(false); });
-    // ─────────────────────────────────────────────────────────────
-    //
-    // For now, remain in loading state — problem will be injected
-    // once the DB is ready.
-    //
-    // Remove this comment block and the line below when wiring DB:
-    setLoading(true); // keep spinner until DB is ready
+      // Use /random when no specific ID is provided
+      const url = problemId
+        ? `${API_BASE}/api/problems/${problemId}`
+        : `${API_BASE}/api/problems/random`;
 
+      console.log('[useProblem] problemId received:', problemId);
+      console.log('[useProblem] fetching URL:', url);
+
+      try {
+        const res = await fetch(url);
+
+        if (!res.ok) {
+          const body = await res.json().catch(() => ({}));
+          throw new Error(body.error || `HTTP ${res.status}`);
+        }
+
+        const data = await res.json();
+        console.log('[useProblem] data received:', data);
+
+        if (!cancelled) {
+          setProblem(data);
+        }
+      } catch (err) {
+        console.error('[useProblem] fetch error:', err.message, '| URL was:', url);
+        if (!cancelled) {
+          setError(err.message || 'Failed to load problem');
+        }
+      } finally {
+        if (!cancelled) {
+          setLoading(false);
+        }
+      }
+    }
+
+    fetchProblem();
+
+    return () => {
+      cancelled = true;
+    };
   }, [problemId]);
 
   return { problem, loading, error };

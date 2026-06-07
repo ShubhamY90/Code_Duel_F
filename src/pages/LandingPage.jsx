@@ -87,17 +87,17 @@ export default function LandingPage() {
           <div className="flex items-center gap-4">
             <button 
               id="nav-signin-btn"
-              onClick={() => navigate('/lobby')} 
+              onClick={() => navigate('/duel', { state: { username: 'Guest' } })} 
               className="btn-outline px-4 py-2 text-xs font-bold"
             >
               Sign In
             </button>
             <button 
               id="nav-get-started-btn"
-              onClick={() => navigate('/lobby')} 
+              onClick={() => navigate('/duel', { state: { username: 'Guest' } })} 
               className="btn-primary px-4 py-2 text-xs font-bold"
             >
-              Enter Lobby <ArrowRight size={13} />
+              Enter Arena <ArrowRight size={13} />
             </button>
           </div>
         </div>
@@ -126,14 +126,14 @@ export default function LandingPage() {
             <div className="flex flex-wrap gap-3.5 mb-12">
               <button 
                 id="start-duel-btn"
-                onClick={() => navigate('/lobby')} 
+                onClick={() => navigate('/duel', { state: { username: 'Guest' } })} 
                 className="btn-primary"
               >
                 <Sword size={16} /> Start a Duel
               </button>
               <button 
                 id="watch-demo-btn"
-                onClick={() => navigate('/duel')} 
+                onClick={() => navigate('/duel', { state: { username: 'DemoUser' } })} 
                 className="btn-outline"
               >
                 Watch Demo

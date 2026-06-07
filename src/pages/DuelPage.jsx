@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { useNavigate, useLocation } from 'react-router-dom';
+import { useNavigate, useLocation, useParams } from 'react-router-dom';
 import Editor from '@monaco-editor/react';
 import {
   Sword, Timer, CheckCircle, XCircle, Play, RotateCcw,
@@ -25,17 +25,149 @@ function ProblemSkeleton() {
     </div>
   );
 }
+const parseStructuredInput = (input, problemId) => {
+  if (!input) return null;
+  const normalized = input.replace(/\\n/g, '\n');
+  const lines = normalized.trim().split('\n').map(l => l.trim()).filter(Boolean);
+  
+  if (lines.length === 0) return null;
+  
+  // Check if first line contains numeric values
+  const firstLineNums = lines[0].split(/\s+/).map(Number);
+  const hasOnlyNums = firstLineNums.every(n => !isNaN(n));
+  
+  if (!hasOnlyNums) {
+    // Handle inline key-value pairs (e.g. "nums = [2,7,11,15], target = 9")
+    const pairs = {};
+    const parts = normalized.split(',');
+    parts.forEach(part => {
+      const kv = part.split('=');
+      if (kv.length === 2) {
+        const k = kv[0].trim();
+        const v = kv[1].trim();
+        try {
+          pairs[k] = JSON.parse(v);
+        } catch {
+          pairs[k] = v;
+        }
+      }
+    });
+    if (Object.keys(pairs).length > 0) {
+      return pairs;
+    }
+    return null;
+  }
+  
+  // Standard competitive programming formatting heuristics
+  
+  // Case A: First line has exactly 1 number (usually size N)
+  if (firstLineNums.length === 1) {
+    const N = firstLineNums[0];
+    const remainingLines = lines.slice(1);
+    
+    if (remainingLines.length === 0) {
+      return { N };
+    }
+    
+    if (remainingLines.length === 1) {
+      const arr = remainingLines[0].split(/\s+/).map(Number);
+      return { N, arr: arr.length === 1 ? arr[0] : arr };
+    }
+    
+    const parsedLines = remainingLines.map(line => line.split(/\s+/).map(Number));
+    const allNumeric = parsedLines.every(arr => arr.every(n => !isNaN(n)));
+    
+    if (allNumeric) {
+      // Tree Heuristics: N nodes, N-1 lines, each containing 2 (or 3 for weighted) integers
+      if (remainingLines.length === N - 1 && parsedLines.every(row => row.length === 2 || row.length === 3)) {
+        return { N, edges: parsedLines };
+      }
+      
+      // Multiple Arrays: each remaining line has exactly N elements
+      if (parsedLines.every(arr => arr.length === N)) {
+        const result = { N };
+        parsedLines.forEach((arr, idx) => {
+          result[`arr${idx + 1}`] = arr;
+        });
+        return result;
+      }
+      
+      // Fallback for multiple lines
+      const result = { N };
+      parsedLines.forEach((arr, idx) => {
+        result[`arr${idx + 1}`] = arr.length === 1 ? arr[0] : arr;
+      });
+      return result;
+    }
+  }
+  
+  // Case B: First line has exactly 2 numbers (usually N M or N K)
+  if (firstLineNums.length === 2) {
+    const [N, M] = firstLineNums;
+    const remainingLines = lines.slice(1);
+    const parsedLines = remainingLines.map(line => line.split(/\s+/).map(Number));
+    const allNumeric = parsedLines.every(arr => arr.every(n => !isNaN(n)));
+    
+    if (allNumeric) {
+      // Graph Heuristics: M edges, each containing 2 (or 3 for weighted) integers
+      if (remainingLines.length === M && parsedLines.every(row => row.length === 2 || row.length === 3)) {
+        return { N, M, edges: parsedLines };
+      }
+      
+      const result = { N, M };
+      parsedLines.forEach((arr, idx) => {
+        result[`arr${idx + 1}`] = arr.length === 1 ? arr[0] : arr;
+      });
+      return result;
+    }
+  }
+  
+  // General Fallback
+  const result = {};
+  lines.forEach((line, idx) => {
+    const arr = line.split(/\s+/).map(Number);
+    if (arr.every(n => !isNaN(n))) {
+      result[`line${idx + 1}`] = arr.length === 1 ? arr[0] : arr;
+    } else {
+      result[`line${idx + 1}`] = line;
+    }
+  });
+  return result;
+};
+
+const formatValue = (val) => {
+  if (Array.isArray(val)) {
+    if (Array.isArray(val[0])) {
+      return `[${val.map(row => `[${row.join(', ')}]`).join(', ')}]`;
+    }
+    return `[${val.join(', ')}]`;
+  }
+  return String(val);
+};
 
 export default function DuelPage() {
   const navigate = useNavigate();
   const location = useLocation();
+  const { problemId: paramProblemId } = useParams();
+
+  const formatNewlines = (str) => {
+    if (typeof str !== 'string') return str;
+    return str.replace(/\\n/g, '\n');
+  };
 
   const {
     username = 'Anonymous',
-    problemId = null,
+    problemId: stateProblemId = null,
     opponent = { name: 'Waiting…' },
     durationSec = 30 * 60,
   } = location.state || {};
+
+  // URL param takes priority; fall back to navigation state
+  const problemId = paramProblemId || stateProblemId;
+
+  console.log('[DuelPage] paramProblemId (from URL):', paramProblemId);
+  console.log('[DuelPage] stateProblemId (from nav state):', stateProblemId);
+  console.log('[DuelPage] resolved problemId (passed to hook):', problemId);
 
   const { problem, loading: problemLoading, error: problemError } = useProblem(problemId);
 
@@ -57,14 +189,19 @@ export default function DuelPage() {
       setTimeLeft(t => {
         if (t <= 1) {
           clearInterval(timerRef.current);
-          navigate('/results', { state: { timeout: true, username } });
+          setSubmitted(true);
+          setConsoleOpen(true);
+          setConsoleTab('tests');
+          setSubmitError("Time expired! Submissions are now closed.");
           return 0;
         }
         return t - 1;
       });
     }, 1000);
-    return () => clearInterval(timerRef.current);
-  }, [navigate, username]);
+    return () => {
+      if (timerRef.current) clearInterval(timerRef.current);
+    };
+  }, [username]);
 
   // Opponent progress simulation
   const [opponentProgress, setOpponentProgress] = useState(0);
@@ -78,7 +215,6 @@ export default function DuelPage() {
   // UI States
   const [editorFull, setEditorFull] = useState(false);
   const [isRunning, setIsRunning] = useState(false);
-  // eslint-disable-next-line no-unused-vars
   const [submitted, setSubmitted] = useState(false);
   const [testResults, setTestResults] = useState(null);
   const [submitError, setSubmitError] = useState(null);
@@ -152,17 +288,11 @@ export default function DuelPage() {
         passed: true,
         time: '8ms'
       }));
-      navigate('/results', { 
-        state: { 
-          results, 
-          timeLeft, 
-          problem: problem.title, 
-          timeout: false, 
-          username 
-        } 
-      });
+      setTestResults(results);
+      setSubmitted(true);
+      if (timerRef.current) clearInterval(timerRef.current);
     }, 1500);
-  }, [problem, timeLeft, navigate, username]);
+  }, [problem]);
 
   const DIFF_COLOR = { 
     Easy: 'text-brand-green bg-brand-green/10 border-brand-green/20', 
@@ -299,58 +429,149 @@ export default function DuelPage() {
             {problemLoading && <ProblemSkeleton />}
 
             {problemError && !problemLoading && (
-              <div className="flex flex-col items-center justify-center gap-3 p-12 text-center text-white/35">
-                <WifiOff size={24} className="opacity-50" />
-                <p className="text-xs font-semibold text-white/50">Error fetching problem</p>
-                <code className="font-mono-code text-[0.65rem] text-brand-red bg-brand-red/5 px-2 py-1 rounded border border-brand-red/15 break-all">{problemError}</code>
+              <div className="flex flex-col items-center justify-center gap-4 p-10 text-center">
+                <WifiOff size={28} className="text-brand-red/60" />
+                <div>
+                  <p className="text-sm font-bold text-white/70 mb-1">Problem not found</p>
+                  <code className="font-mono-code text-[0.65rem] text-brand-red bg-brand-red/5 px-2 py-1 rounded border border-brand-red/15 break-all">{problemError}</code>
+                </div>
+                <button
+                  onClick={() => navigate('/lobby')}
+                  className="btn-secondary text-xs py-1.5 px-4 mt-1"
+                >
+                  ← Return to Lobby
+                </button>
               </div>
             )}
 
             {!problemLoading && !problemError && !problem && (
               <div className="flex flex-col items-center justify-center gap-3 p-12 text-center text-white/30">
                 <Loader2 size={24} className="animate-spin text-brand-purple" />
-                <p className="text-xs font-semibold">Waiting for problem loading...</p>
+                <p className="text-xs font-semibold">Loading problem...</p>
               </div>
             )}
 
             {problem && (
               <div className="p-5 flex flex-col gap-5">
+                {/* Title row */}
                 <div>
                   <div className="flex items-center gap-1.5 mb-2">
-                    <span className={`text-[0.55rem] font-bold px-2 py-0.5 border rounded-full ${DIFF_COLOR[problem.difficulty] || ''}`}>{problem.difficulty}</span>
-                    <span className="text-[0.55rem] font-bold px-2 py-0.5 bg-brand-purple/10 border border-brand-purple/20 text-brand-violet rounded-full">{problem.topic}</span>
+                    <span className={`text-[0.55rem] font-bold px-2 py-0.5 border rounded-full ${DIFF_COLOR[problem.difficulty] || ''}`}>
+                      {problem.difficulty}
+                    </span>
+                    {problem.topic && (
+                      <span className="text-[0.55rem] font-bold px-2 py-0.5 bg-brand-purple/10 border border-brand-purple/20 text-brand-violet rounded-full">
+                        {problem.topic}
+                      </span>
+                    )}
+                    {problem.rating > 0 && (
+                      <span className="text-[0.55rem] font-bold px-2 py-0.5 bg-brand-amber/10 border border-brand-amber/20 text-brand-amber rounded-full">
+                        ★ {problem.rating}
+                      </span>
+                    )}
                   </div>
                   <h2 className="text-lg font-black tracking-tight text-white/90">{problem.title}</h2>
                 </div>
 
+                {/* Description */}
                 <div className="text-xs text-white/50 leading-relaxed font-normal whitespace-pre-wrap">
-                  {problem.description}
+                  {formatNewlines(problem.description)}
                 </div>
 
-                {/* Examples */}
-                <div>
-                  <p className="text-[0.6rem] font-extrabold uppercase tracking-[0.2em] text-white/30 mb-2.5">Sample Examples</p>
-                  <div className="flex flex-col gap-2">
-                    {(problem.examples ?? []).map((ex, i) => (
-                      <div key={i} className="bg-bg-panel border border-white/[0.04] rounded-xl p-3.5 text-[0.7rem] leading-relaxed">
-                        <div className="font-bold text-white/40 mb-1.5">Example {i + 1}</div>
-                        <div><span className="text-white/20 font-mono-code">Input: </span><code className="font-mono-code text-brand-cyan">{ex.input}</code></div>
-                        <div><span className="text-white/20 font-mono-code">Output: </span><code className="font-mono-code text-brand-green">{ex.output}</code></div>
-                        {ex.explain && <div className="text-white/30 mt-1.5 italic font-sans text-[0.65rem]">Explanation: {ex.explain}</div>}
-                      </div>
-                    ))}
+                {/* Input Format */}
+                {problem.inputFormat && problem.inputFormat.length > 0 && (
+                  <div>
+                    <p className="text-[0.6rem] font-extrabold uppercase tracking-[0.2em] text-white/30 mb-2">Input Format</p>
+                    <ul className="space-y-1">
+                      {problem.inputFormat.map((line, i) => (
+                        <li key={i} className="text-[0.7rem] text-white/40 flex gap-2">
+                          <span className="text-white/20 font-mono-code">{i + 1}.</span> {line}
+                        </li>
+                      ))}
+                    </ul>
                   </div>
-                </div>
+                )}
+
+                {/* Output Format */}
+                {problem.outputFormat && problem.outputFormat.length > 0 && (
+                  <div>
+                    <p className="text-[0.6rem] font-extrabold uppercase tracking-[0.2em] text-white/30 mb-2">Output Format</p>
+                    <ul className="space-y-1">
+                      {problem.outputFormat.map((line, i) => (
+                        <li key={i} className="text-[0.7rem] text-white/40 flex gap-2">
+                          <span className="text-white/20 font-mono-code">{i + 1}.</span> {line}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+
+                {/* Sample Test Cases */}
+                {problem.sampleTestCases && problem.sampleTestCases.length > 0 && (
+                  <div>
+                    <p className="text-[0.6rem] font-extrabold uppercase tracking-[0.2em] text-white/30 mb-2.5">Sample Test Cases</p>
+                    <div className="flex flex-col gap-3">
+                      {problem.sampleTestCases.map((tc, i) => (
+                        <div key={i} className="bg-bg-panel border border-white/[0.04] rounded-xl overflow-hidden">
+                          <div className="px-3.5 py-2 border-b border-white/[0.04] text-[0.6rem] font-bold text-white/30 uppercase tracking-widest">
+                            Example {i + 1}
+                          </div>
+                          <div className="p-3.5 flex flex-col gap-3">
+                            <div>
+                              <p className="text-[0.6rem] font-extrabold text-white/30 mb-1">Sample Input</p>
+                              <pre className="font-mono-code text-[0.7rem] text-brand-cyan bg-[#05050a]/60 border border-white/[0.03] rounded-lg p-2.5 whitespace-pre-wrap break-all">{formatNewlines(tc.input)}</pre>
+                              {(() => {
+                                const structured = parseStructuredInput(tc.input, problem.id);
+                                if (!structured) return null;
+                                return (
+                                  <div className="mt-1.5 flex flex-wrap gap-x-4 gap-y-1 text-[0.65rem] font-mono-code text-white/50 bg-[#05050a]/30 px-2.5 py-1.5 rounded-lg border border-white/[0.02]">
+                                    {Object.entries(structured).map(([key, val]) => (
+                                      <div key={key}>
+                                        <span className="text-brand-purple font-semibold">{key}</span>
+                                        <span className="text-white/20 mx-1">=</span>
+                                        <span className="text-white/80">{formatValue(val)}</span>
+                                      </div>
+                                    ))}
+                                  </div>
+                                );
+                              })()}
+                            </div>
+                            <div>
+                              <p className="text-[0.6rem] font-extrabold text-white/30 mb-1">Sample Output</p>
+                              <pre className="font-mono-code text-[0.7rem] text-brand-green bg-[#05050a]/60 border border-white/[0.03] rounded-lg p-2.5 whitespace-pre-wrap break-all">{formatNewlines(tc.output)}</pre>
+                            </div>
+                            {tc.explanation && (
+                              <div>
+                                <p className="text-[0.6rem] font-extrabold text-white/30 mb-1">Explanation</p>
+                                <p className="text-[0.65rem] text-white/40 italic leading-relaxed">{tc.explanation}</p>
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
 
                 {/* Constraints */}
                 {problem.constraints && (
                   <div>
                     <p className="text-[0.6rem] font-extrabold uppercase tracking-[0.2em] text-white/30 mb-2">Constraints</p>
-                    <ul className="list-disc list-inside space-y-1 text-white/40 text-[0.65rem]">
-                      {problem.constraints.map((c, i) => (
-                        <li key={i} className="font-mono-code bg-white/[0.01] px-1 py-0.5 rounded border border-white/[0.02] inline-block">{c}</li>
-                      ))}
-                    </ul>
+                    {Array.isArray(problem.constraints) ? (
+                      <ul className="list-disc list-inside space-y-1 text-white/40 text-[0.65rem]">
+                        {problem.constraints.map((c, i) => (
+                          <li key={i} className="font-mono-code">{c}</li>
+                        ))}
+                      </ul>
+                    ) : (
+                      <ul className="space-y-1">
+                        {Object.entries(problem.constraints).map(([key, val]) => (
+                          <li key={key} className="font-mono-code text-[0.65rem] text-white/40 bg-white/[0.01] px-2 py-1 rounded border border-white/[0.02]">
+                            <span className="text-brand-cyan">{key}</span>: {val}
+                          </li>
+                        ))}
+                      </ul>
+                    )}
                   </div>
                 )}
               </div>
@@ -481,6 +702,15 @@ export default function DuelPage() {
 
                 {!submitError && !isRunning && consoleTab === 'tests' && (
                   <div>
+                    {submitted && (
+                      <div className="flex items-center gap-2 bg-brand-green/10 border border-brand-green/20 rounded-xl p-3.5 mb-4 text-brand-green animate-fade-in">
+                        <CheckCircle size={16} className="flex-shrink-0" />
+                        <div className="text-xs font-sans">
+                          <strong className="font-extrabold block">Submission Successful!</strong>
+                          All test cases passed. You solved this problem in {formatTime(durationSec - timeLeft)}.
+                        </div>
+                      </div>
+                    )}
                     {!testResults ? (
                       <div className="text-center py-8 text-white/20">
                         <span>Execute code run to check sample test assertions.</span>
@@ -499,9 +729,25 @@ export default function DuelPage() {
                               <span className="text-white/20">{r.time}</span>
                             </div>
                             <div className="p-3 text-[0.65rem] space-y-1">
-                              <div><span className="text-white/20">Input: </span><code className="text-white/60">{r.input}</code></div>
-                              <div><span className="text-white/20">Expected: </span><code className="text-white/60">{r.expected}</code></div>
-                              <div><span className="text-white/20">Returned: </span><code className={r.passed ? 'text-brand-green' : 'text-brand-red'}>{r.got}</code></div>
+                              <div>
+                                <span className="text-white/20">Input: </span>
+                                <code className="text-white/60 whitespace-pre-wrap block p-1 mt-0.5 bg-[#05050a]/40 rounded border border-white/[0.02]">{formatNewlines(r.input)}</code>
+                                {(() => {
+                                  const structured = parseStructuredInput(r.input, problem?.id);
+                                  if (!structured) return null;
+                                  return (
+                                    <div className="mt-1 flex flex-wrap gap-x-3 text-[0.6rem] font-mono-code text-white/40 bg-[#05050a]/20 px-2 py-0.5 rounded border border-white/[0.01]">
+                                      {Object.entries(structured).map(([key, val]) => (
+                                        <span key={key}>
+                                          <span className="text-brand-purple/70 font-semibold">{key}</span>={formatValue(val)}
+                                        </span>
+                                      ))}
+                                    </div>
+                                  );
+                                })()}
+                              </div>
+                              <div><span className="text-white/20">Expected: </span><code className="text-white/60 whitespace-pre-wrap block p-1 mt-0.5 bg-[#05050a]/40 rounded border border-white/[0.02]">{formatNewlines(r.expected)}</code></div>
+                              <div><span className="text-white/20">Returned: </span><code className={`${r.passed ? 'text-brand-green' : 'text-brand-red'} whitespace-pre-wrap block p-1 mt-0.5 bg-[#05050a]/40 rounded border border-white/[0.02]`}>{formatNewlines(r.got)}</code></div>
                             </div>
                           </div>
                         ))}
