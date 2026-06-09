@@ -4,11 +4,12 @@ import Editor from '@monaco-editor/react';
 import {
   Sword, Timer, CheckCircle, XCircle, Play, RotateCcw,
   ChevronDown, ChevronUp, Maximize2, Minimize2, AlertTriangle,
-  Code2, Loader2, WifiOff, Terminal
+  Code2, Loader2, WifiOff, Terminal, LogOut
 } from 'lucide-react';
 import { useProblem } from '../hooks/useProblem';
 import { LANGUAGES, DEFAULT_LANGUAGE } from '../constants/languages';
 import { getStarterCode } from '../constants/starterTemplates';
+import { useAuth } from '../context/AuthContext';
 
 // eslint-disable-next-line no-unused-vars
 const JUDGE0_BASE_URL = import.meta.env.VITE_JUDGE0_URL || '';
@@ -149,6 +150,7 @@ export default function DuelPage() {
   const navigate = useNavigate();
   const location = useLocation();
   const { problemId: paramProblemId } = useParams();
+  const { user, logout } = useAuth();
 
   const formatNewlines = (str) => {
     if (typeof str !== 'string') return str;
@@ -156,11 +158,15 @@ export default function DuelPage() {
   };
 
   const {
-    username = 'Anonymous',
+    // Use Firebase display name / email as fallback, then nav-state username
+    username = user?.displayName || user?.email?.split('@')[0] || 'Anonymous',
     problemId: stateProblemId = null,
     opponent = { name: 'Waiting…' },
     durationSec = 30 * 60,
   } = location.state || {};
+
+  // Prefer nav-state username over Firebase (allows lobby to set a handle)
+  const displayName = (location.state?.username) || user?.displayName || user?.email?.split('@')[0] || 'Anonymous';
 
   // URL param takes priority; fall back to navigation state
   const problemId = paramProblemId || stateProblemId;
@@ -277,22 +283,51 @@ export default function DuelPage() {
     setConsoleTab('tests');
     setSubmitError(null);
 
-    // Simulate submittal to Judge0 and results transition
-    setTimeout(() => {
-      setIsRunning(false);
-      // Generate some mock results
-      const results = (problem.visibleTestCases ?? []).map((tc) => ({
-        input: tc.input,
-        expected: tc.output,
-        got: tc.output,
-        passed: true,
-        time: '8ms'
+    try {
+      const compilerUrl = import.meta.env.VITE_COMPILER_URL || 'http://localhost:3000';
+      const res = await fetch(`${compilerUrl}/submit`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ problemId: problem.id, code, userId: user?.uid }),
+      });
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        throw new Error(data.message || `Server error ${res.status}`);
+      }
+
+      // Map compiler verdict to UI results
+      // data = { success, verdict, passed, total }
+      const total = data.total ?? 0;
+      const passed = data.passed ?? 0;
+
+      // Build a summary result card per test case (we only know pass/fail counts,
+      // hidden test inputs are never exposed)
+      const results = Array.from({ length: total }, (_, i) => ({
+        label: `Hidden Test ${i + 1}`,
+        input: '(hidden)',
+        expected: '(hidden)',
+        got: i < passed ? '✓ Passed' : '✗ Failed',
+        passed: i < passed,
+        time: '—',
       }));
-      setTestResults(results);
-      setSubmitted(true);
-      if (timerRef.current) clearInterval(timerRef.current);
-    }, 1500);
-  }, [problem]);
+
+      setTestResults(results.length ? results : null);
+
+      if (data.success) {
+        setSubmitted(true);
+        if (timerRef.current) clearInterval(timerRef.current);
+      } else {
+        setSubmitError(`Verdict: ${data.verdict} (${passed}/${total} passed)`);
+      }
+    } catch (err) {
+      const targetPort = import.meta.env.VITE_COMPILER_URL ? '' : ' on port 3000';
+      setSubmitError(err.message || `Compiler server unreachable. Is it running${targetPort}?`);
+    } finally {
+      setIsRunning(false);
+    }
+  }, [problem, code]);
 
   const DIFF_COLOR = { 
     Easy: 'text-brand-green bg-brand-green/10 border-brand-green/20', 
@@ -309,11 +344,21 @@ export default function DuelPage() {
         {/* Logo and problem status */}
         <div className="flex items-center gap-3">
           <button
-            onClick={() => navigate('/lobby')}
+            onClick={() => navigate('/')}
             className="flex items-center gap-2 text-sm font-black bg-transparent border-0 cursor-pointer text-white"
           >
             <Sword size={16} className="text-brand-purple" />
             <span className="hidden sm:inline">CodeDuel</span>
+          </button>
+
+          <div className="h-4 w-px bg-white/10 hidden sm:block" />
+
+          {/* My Submissions link */}
+          <button
+            onClick={() => navigate('/submissions')}
+            className="hidden sm:flex items-center gap-1.5 text-[0.65rem] font-bold text-white/35 hover:text-white/70 transition-colors"
+          >
+            <span>My Submissions</span>
           </button>
           
           <div className="h-4 w-px bg-white/10 hidden sm:block" />
@@ -343,7 +388,7 @@ export default function DuelPage() {
         <div className="flex items-center gap-4 flex-1 max-w-sm mx-6">
           <div className="flex-1">
             <div className="flex justify-between text-[0.55rem] font-bold text-white/30 mb-1">
-              <span>{username}</span>
+              <span>{displayName}</span>
               <span className="text-brand-violet">Coding...</span>
             </div>
             <div className="h-1 bg-white/5 rounded-full overflow-hidden">
@@ -415,6 +460,15 @@ export default function DuelPage() {
               className="btn-primary py-1.5 px-3.5 text-xs shadow-none"
             >
               Submit ⚡
+            </button>
+            <div className="h-4 w-px bg-white/10 ml-1" />
+            <button
+              id="logout-btn"
+              onClick={async () => { await logout(); navigate('/auth'); }}
+              title="Sign out"
+              className="p-2 rounded-xl border border-white/[0.05] bg-bg-panel text-white/25 hover:text-brand-red hover:border-brand-red/25 transition-colors"
+            >
+              <LogOut size={13} />
             </button>
           </div>
         </div>
