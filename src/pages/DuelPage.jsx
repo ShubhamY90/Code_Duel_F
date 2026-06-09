@@ -10,6 +10,8 @@ import { useProblem } from '../hooks/useProblem';
 import { LANGUAGES, DEFAULT_LANGUAGE } from '../constants/languages';
 import { getStarterCode } from '../constants/starterTemplates';
 import { useAuth } from '../context/AuthContext';
+import { doc, onSnapshot, updateDoc, serverTimestamp } from 'firebase/firestore';
+import { db } from '../config/firebase';
 
 // eslint-disable-next-line no-unused-vars
 const JUDGE0_BASE_URL = import.meta.env.VITE_JUDGE0_URL || '';
@@ -149,7 +151,7 @@ const formatValue = (val) => {
 export default function DuelPage() {
   const navigate = useNavigate();
   const location = useLocation();
-  const { problemId: paramProblemId } = useParams();
+  const { roomId, problemId: paramProblemId } = useParams();
   const { user, logout } = useAuth();
 
   const formatNewlines = (str) => {
@@ -168,14 +170,81 @@ export default function DuelPage() {
   // Prefer nav-state username over Firebase (allows lobby to set a handle)
   const displayName = (location.state?.username) || user?.displayName || user?.email?.split('@')[0] || 'Anonymous';
 
-  // URL param takes priority; fall back to navigation state
-  const problemId = paramProblemId || stateProblemId;
+  const [room, setRoom] = useState(null);
+  const [hostProfile, setHostProfile] = useState(null);
+  const [guestProfile, setGuestProfile] = useState(null);
+
+  // Helper to determine if current player is the host
+  const isHost = user && room && user.uid === room.hostId;
+
+  // URL param takes priority, then Firestore room, then navigation state
+  const problemId = paramProblemId || room?.problemId || stateProblemId;
+  const shouldSkipProblemFetch = !!roomId && !room?.problemId;
 
   console.log('[DuelPage] paramProblemId (from URL):', paramProblemId);
   console.log('[DuelPage] stateProblemId (from nav state):', stateProblemId);
+  console.log('[DuelPage] room?.problemId (from Firestore):', room?.problemId);
   console.log('[DuelPage] resolved problemId (passed to hook):', problemId);
 
-  const { problem, loading: problemLoading, error: problemError } = useProblem(problemId);
+  const { problem, loading: problemLoading, error: problemError } = useProblem(problemId, shouldSkipProblemFetch);
+
+  const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:4000';
+
+  // Subscribe to room updates in Firestore
+  useEffect(() => {
+    if (!roomId) return;
+    const roomRef = doc(db, 'rooms', roomId);
+    const unsubscribe = onSnapshot(roomRef, (snapshot) => {
+      if (snapshot.exists()) {
+        const data = snapshot.data();
+        setRoom(data);
+        
+        // Match completed -> redirect to Results Page
+        if (data.status === 'completed') {
+          navigate(`/room/${roomId}/results`);
+        }
+      }
+    });
+    return unsubscribe;
+  }, [roomId, navigate]);
+
+  // Fetch host user profile
+  useEffect(() => {
+    if (!room?.hostId) return;
+
+    async function fetchHostProfile() {
+      try {
+        const res = await fetch(`${API_BASE}/api/users/${room.hostId}`);
+        if (res.ok) {
+          const data = await res.json();
+          setHostProfile(data);
+        }
+      } catch (err) {
+        console.warn('Failed to resolve host profile:', err);
+      }
+    }
+
+    fetchHostProfile();
+  }, [room?.hostId, API_BASE]);
+
+  // Fetch guest user profile
+  useEffect(() => {
+    if (!room?.guestId) return;
+
+    async function fetchGuestProfile() {
+      try {
+        const res = await fetch(`${API_BASE}/api/users/${room.guestId}`);
+        if (res.ok) {
+          const data = await res.json();
+          setGuestProfile(data);
+        }
+      } catch (err) {
+        console.warn('Failed to resolve guest profile:', err);
+      }
+    }
+
+    fetchGuestProfile();
+  }, [room?.guestId, API_BASE]);
 
   // Editor states
   const [lang, setLang] = useState(DEFAULT_LANGUAGE);
@@ -186,37 +255,47 @@ export default function DuelPage() {
     setCode(getStarterCode(lang, problem));
   }, [problem, lang]);
 
-  // Timer
-  const [timeLeft, setTimeLeft] = useState(durationSec);
-  const timerRef = useRef(null);
+  // 10 minutes (600 seconds) match duration based on Firestore startedAt
+  const [timeLeft, setTimeLeft] = useState(600);
 
   useEffect(() => {
-    timerRef.current = setInterval(() => {
-      setTimeLeft(t => {
-        if (t <= 1) {
-          clearInterval(timerRef.current);
-          setSubmitted(true);
-          setConsoleOpen(true);
-          setConsoleTab('tests');
-          setSubmitError("Time expired! Submissions are now closed.");
-          return 0;
+    if (!room?.startedAt) return;
+
+    const interval = setInterval(async () => {
+      const startedAtMs = room.startedAt.toMillis ? room.startedAt.toMillis() : Date.now();
+      const elapsedMs = Date.now() - startedAtMs;
+      const secLeft = Math.max(0, 600 - Math.floor(elapsedMs / 1000));
+      
+      setTimeLeft(secLeft);
+
+      if (secLeft <= 0) {
+        clearInterval(interval);
+        
+        // Host calculates the end of match on timeout
+        if (user && user.uid === room.hostId && room.status !== 'completed') {
+          try {
+            const hostScore = room.hostScore ?? 0;
+            const guestScore = room.guestScore ?? 0;
+            let winnerId = 'tie';
+            if (hostScore > guestScore) {
+              winnerId = room.hostId;
+            } else if (guestScore > hostScore) {
+              winnerId = room.guestId;
+            }
+            await updateDoc(doc(db, 'rooms', roomId), {
+              status: 'completed',
+              winnerId,
+              completedAt: serverTimestamp()
+            });
+          } catch (err) {
+            console.error('Failed to end match on timeout:', err);
+          }
         }
-        return t - 1;
-      });
+      }
     }, 1000);
-    return () => {
-      if (timerRef.current) clearInterval(timerRef.current);
-    };
-  }, [username]);
 
-  // Opponent progress simulation
-  const [opponentProgress, setOpponentProgress] = useState(0);
-  useEffect(() => {
-    const id = setInterval(() => {
-      setOpponentProgress(p => Math.min(p + Math.random() * 3, 95));
-    }, 3000);
-    return () => clearInterval(id);
-  }, []);
+    return () => clearInterval(interval);
+  }, [room?.startedAt, room?.hostId, room?.hostScore, room?.guestScore, room?.status, user, roomId]);
 
   // UI States
   const [editorFull, setEditorFull] = useState(false);
@@ -276,6 +355,38 @@ export default function DuelPage() {
     }, 1200);
   }, [problem]);
 
+  // Warn on tab reload / close during match
+  useEffect(() => {
+    const handleBeforeUnload = (e) => {
+      e.preventDefault();
+      e.returnValue = 'A match is in progress. Leaving this page will forfeit the match!';
+      return e.returnValue;
+    };
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+  }, []);
+
+  const handleLeaveMatch = async () => {
+    if (!room || !user) return;
+    const confirmLeave = window.confirm("Are you sure you want to leave the match? Leaving will count as a surrender, and your opponent will be declared the winner.");
+    if (!confirmLeave) return;
+
+    try {
+      const roomRef = doc(db, 'rooms', roomId);
+      const isHost = user.uid === room.hostId;
+      const opponentId = isHost ? room.guestId : room.hostId;
+      
+      await updateDoc(roomRef, {
+        status: 'completed',
+        winnerId: opponentId,
+        completedAt: serverTimestamp()
+      });
+      navigate(`/room/${roomId}/results`);
+    } catch (err) {
+      console.error('Failed to leave match:', err);
+    }
+  };
+
   const handleSubmit = useCallback(async () => {
     if (!problem) return;
     setIsRunning(true);
@@ -284,11 +395,15 @@ export default function DuelPage() {
     setSubmitError(null);
 
     try {
-      const compilerUrl = import.meta.env.VITE_COMPILER_URL || 'http://localhost:3000';
+      const compilerUrl = import.meta.env.VITE_COMPILER_URL || 'http://localhost:3005';
+      const idToken = user ? await user.getIdToken() : '';
       const res = await fetch(`${compilerUrl}/submit`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ problemId: problem.id, code, userId: user?.uid }),
+        headers: { 
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${idToken}`
+        },
+        body: JSON.stringify({ problemId: problem.id, code }),
       });
 
       const data = await res.json();
@@ -298,12 +413,10 @@ export default function DuelPage() {
       }
 
       // Map compiler verdict to UI results
-      // data = { success, verdict, passed, total }
       const total = data.total ?? 0;
       const passed = data.passed ?? 0;
 
-      // Build a summary result card per test case (we only know pass/fail counts,
-      // hidden test inputs are never exposed)
+      // Build a summary result card per test case
       const results = Array.from({ length: total }, (_, i) => ({
         label: `Hidden Test ${i + 1}`,
         input: '(hidden)',
@@ -315,19 +428,50 @@ export default function DuelPage() {
 
       setTestResults(results.length ? results : null);
 
+      const isHost = user.uid === room?.hostId;
+      const solved = (passed === total && total > 0);
+
+      // Update room document in Firestore
+      if (room && roomId) {
+        const roomRef = doc(db, 'rooms', roomId);
+        const updateData = {};
+        
+        if (isHost) {
+          updateData.hostScore = passed;
+          updateData.hostProgress = Math.round((passed / total) * 100);
+          if (solved) {
+            updateData.hostSolved = true;
+          }
+        } else {
+          updateData.guestScore = passed;
+          updateData.guestProgress = Math.round((passed / total) * 100);
+          if (solved) {
+            updateData.guestSolved = true;
+          }
+        }
+
+        // If this player solved it, they instantly win the match!
+        if (solved) {
+          updateData.status = 'completed';
+          updateData.winnerId = user.uid;
+          updateData.completedAt = serverTimestamp();
+        }
+
+        await updateDoc(roomRef, updateData);
+      }
+
       if (data.success) {
         setSubmitted(true);
-        if (timerRef.current) clearInterval(timerRef.current);
       } else {
         setSubmitError(`Verdict: ${data.verdict} (${passed}/${total} passed)`);
       }
     } catch (err) {
-      const targetPort = import.meta.env.VITE_COMPILER_URL ? '' : ' on port 3000';
+      const targetPort = ' on port 3005';
       setSubmitError(err.message || `Compiler server unreachable. Is it running${targetPort}?`);
     } finally {
       setIsRunning(false);
     }
-  }, [problem, code]);
+  }, [problem, code, room, roomId, user]);
 
   const DIFF_COLOR = { 
     Easy: 'text-brand-green bg-brand-green/10 border-brand-green/20', 
@@ -343,24 +487,11 @@ export default function DuelPage() {
         
         {/* Logo and problem status */}
         <div className="flex items-center gap-3">
-          <button
-            onClick={() => navigate('/')}
-            className="flex items-center gap-2 text-sm font-black bg-transparent border-0 cursor-pointer text-white"
-          >
+          <div className="flex items-center gap-2 text-sm font-black text-white select-none">
             <Sword size={16} className="text-brand-purple" />
             <span className="hidden sm:inline">CodeDuel</span>
-          </button>
+          </div>
 
-          <div className="h-4 w-px bg-white/10 hidden sm:block" />
-
-          {/* My Submissions link */}
-          <button
-            onClick={() => navigate('/submissions')}
-            className="hidden sm:flex items-center gap-1.5 text-[0.65rem] font-bold text-white/35 hover:text-white/70 transition-colors"
-          >
-            <span>My Submissions</span>
-          </button>
-          
           <div className="h-4 w-px bg-white/10 hidden sm:block" />
 
           {/* Problem Badge */}
@@ -389,25 +520,29 @@ export default function DuelPage() {
           <div className="flex-1">
             <div className="flex justify-between text-[0.55rem] font-bold text-white/30 mb-1">
               <span>{displayName}</span>
-              <span className="text-brand-violet">Coding...</span>
+              <span className="text-brand-violet font-semibold">
+                {isHost ? `${room?.hostScore ?? 0} Solved` : `${room?.guestScore ?? 0} Solved`}
+              </span>
             </div>
             <div className="h-1 bg-white/5 rounded-full overflow-hidden">
               <div 
                 className="h-full bg-gradient-brand rounded-full transition-all duration-500" 
-                style={{ width: `${Math.min((code.length / 500) * 100, 95)}%` }} 
+                style={{ width: `${isHost ? (room?.hostProgress ?? 0) : (room?.guestProgress ?? 0)}%` }} 
               />
             </div>
           </div>
           <span className="text-xs flex-shrink-0 opacity-40">⚔️</span>
           <div className="flex-1">
             <div className="flex justify-between text-[0.55rem] font-bold text-white/30 mb-1">
-              <span>{opponent.name}</span>
-              <span className="text-brand-pink">{Math.round(opponentProgress)}%</span>
+              <span>{isHost ? (guestProfile?.displayName || 'Opponent') : (hostProfile?.displayName || 'Host')}</span>
+              <span className="text-brand-pink font-semibold">
+                {isHost ? `${room?.guestScore ?? 0} Solved` : `${room?.hostScore ?? 0} Solved`}
+              </span>
             </div>
             <div className="h-1 bg-white/5 rounded-full overflow-hidden">
               <div 
                 className="h-full bg-brand-pink rounded-full transition-all duration-500" 
-                style={{ width: `${opponentProgress}%` }} 
+                style={{ width: `${isHost ? (room?.guestProgress ?? 0) : (room?.hostProgress ?? 0)}%` }} 
               />
             </div>
           </div>
@@ -462,13 +597,12 @@ export default function DuelPage() {
               Submit ⚡
             </button>
             <div className="h-4 w-px bg-white/10 ml-1" />
-            <button
-              id="logout-btn"
-              onClick={async () => { await logout(); navigate('/auth'); }}
-              title="Sign out"
-              className="p-2 rounded-xl border border-white/[0.05] bg-bg-panel text-white/25 hover:text-brand-red hover:border-brand-red/25 transition-colors"
+            <button 
+              id="leave-match-btn" 
+              onClick={handleLeaveMatch} 
+              className="btn-danger py-1.5 px-3.5 text-xs flex items-center gap-1.5 shadow-none"
             >
-              <LogOut size={13} />
+              Leave Match 🏳️
             </button>
           </div>
         </div>

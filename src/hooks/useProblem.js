@@ -22,12 +22,16 @@ const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:4000';
  * @param {string|null|undefined} problemId  — pass null/undefined for a random problem
  * @returns {{ problem: object|null, loading: boolean, error: string|null }}
  */
-export function useProblem(problemId) {
+export function useProblem(problemId, skip = false) {
   const [problem, setProblem] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError]     = useState(null);
 
   useEffect(() => {
+    if (skip) {
+      setLoading(true);
+      return;
+    }
     let cancelled = false;
 
     async function fetchProblem() {

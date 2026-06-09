@@ -88,7 +88,12 @@ export default function SubmissionsPage() {
       setLoading(true);
       setError(null);
       try {
-        const res  = await fetch(`${API_BASE}/api/submissions?userId=${user.uid}`);
+        const idToken = await user.getIdToken();
+        const res  = await fetch(`${API_BASE}/api/submissions`, {
+          headers: {
+            'Authorization': `Bearer ${idToken}`
+          }
+        });
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
         if (!cancelled) setSubmissions(Array.isArray(data) ? data : []);

@@ -5,6 +5,8 @@ import LandingPage from './pages/LandingPage';
 import AuthPage from './pages/AuthPage';
 import DuelPage from './pages/DuelPage';
 import SubmissionsPage from './pages/SubmissionsPage';
+import RoomPage from './pages/RoomPage';
+import ResultsPage from './pages/ResultsPage';
 
 export default function App() {
   return (
@@ -17,7 +19,23 @@ export default function App() {
 
           {/* Protected routes — must be signed in */}
           <Route
-            path="/duel/:problemId"
+            path="/room/:roomId/results"
+            element={
+              <ProtectedRoute>
+                <ResultsPage />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/room/:roomId"
+            element={
+              <ProtectedRoute>
+                <RoomPage />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/duel/:roomId"
             element={
               <ProtectedRoute>
                 <DuelPage />

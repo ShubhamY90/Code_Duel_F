@@ -12,13 +12,15 @@ const AuthContext = createContext(null);
  */
 async function initUserDocument(firebaseUser) {
   try {
+    const idToken = await firebaseUser.getIdToken();
     await fetch(`${API_BASE}/api/users/init`, {
       method:  'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${idToken}`
+      },
       body: JSON.stringify({
-        uid:         firebaseUser.uid,
         displayName: firebaseUser.displayName || '',
-        email:       firebaseUser.email       || '',
         photoURL:    firebaseUser.photoURL    || '',
       }),
     });

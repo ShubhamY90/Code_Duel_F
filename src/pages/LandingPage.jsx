@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { useAuth } from '../context/AuthContext';
 import { 
   Sword, Zap, ArrowRight, Sparkles, Terminal, Award, Users, 
   Code2, Trophy, Activity, Shield, ChevronDown, Cpu, 
@@ -166,7 +167,78 @@ function StatItem({ value, label, color, icon: Icon }) {
 
 export default function LandingPage() {
   const navigate = useNavigate();
+  const { user } = useAuth();
   const [activeLang, setActiveLang] = useState('javascript');
+  
+  const [matchType, setMatchType] = useState('private'); // 'private' | 'public'
+  const [privateAction, setPrivateAction] = useState('create'); // 'create' | 'join'
+  const [joinCode, setJoinCode] = useState('');
+
+  const handleStartDuel = async () => {
+    if (!user) {
+      navigate('/auth', { state: { from: { pathname: '/' } } });
+      return;
+    }
+
+    try {
+      const idToken = await user.getIdToken();
+      const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:4000';
+      const res = await fetch(`${API_BASE}/api/rooms/create`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${idToken}`
+        }
+      });
+
+      if (!res.ok) {
+        const errorData = await res.json().catch(() => ({}));
+        throw new Error(errorData.message || `HTTP ${res.status}`);
+      }
+
+      const data = await res.json();
+      navigate(`/room/${data.roomId}`);
+    } catch (err) {
+      console.error('Error creating room:', err.message);
+      alert('Failed to create room: ' + err.message);
+    }
+  };
+
+  const handleJoinRoom = async () => {
+    if (!user) {
+      navigate('/auth', { state: { from: { pathname: '/' } } });
+      return;
+    }
+
+    if (joinCode.length !== 6) {
+      alert('Room code must be exactly 6 characters.');
+      return;
+    }
+
+    try {
+      const idToken = await user.getIdToken();
+      const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:4000';
+      const res = await fetch(`${API_BASE}/api/rooms/join`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${idToken}`
+        },
+        body: JSON.stringify({ roomCode: joinCode })
+      });
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        throw new Error(data.error || `HTTP ${res.status}`);
+      }
+
+      navigate(`/room/${data.roomId}`);
+    } catch (err) {
+      console.error('Error joining room:', err.message);
+      alert('Failed to join room: ' + err.message);
+    }
+  };
   const [typedCode, setTypedCode] = useState('');
   const [currentFaq, setCurrentFaq] = useState(null);
   
@@ -293,20 +365,39 @@ export default function LandingPage() {
           </div>
 
           <div className="flex items-center gap-4">
-            <button 
-              id="nav-signin-btn"
-              onClick={() => navigate('/duel', { state: { username: 'Guest' } })} 
-              className="btn-outline px-4 py-2 text-xs font-bold"
-            >
-              Sign In
-            </button>
-            <button 
-              id="nav-get-started-btn"
-              onClick={() => navigate('/duel', { state: { username: 'Guest' } })} 
-              className="btn-primary px-4 py-2 text-xs font-bold shadow-[#9d1f15]/35"
-            >
-              Enter Arena <ArrowRight size={13} />
-            </button>
+            {user ? (
+              <>
+                <button
+                  onClick={() => navigate('/submissions')}
+                  className="btn-outline px-4 py-2 text-xs font-bold"
+                >
+                  My Submissions
+                </button>
+                <button
+                  onClick={handleStartDuel}
+                  className="btn-primary px-4 py-2 text-xs font-bold shadow-[#9d1f15]/35"
+                >
+                  Create Duel <ArrowRight size={13} />
+                </button>
+              </>
+            ) : (
+              <>
+                <button 
+                  id="nav-signin-btn"
+                  onClick={() => navigate('/auth')} 
+                  className="btn-outline px-4 py-2 text-xs font-bold"
+                >
+                  Sign In
+                </button>
+                <button 
+                  id="nav-get-started-btn"
+                  onClick={() => navigate('/auth')} 
+                  className="btn-primary px-4 py-2 text-xs font-bold shadow-[#9d1f15]/35"
+                >
+                  Enter Arena <ArrowRight size={13} />
+                </button>
+              </>
+            )}
           </div>
         </div>
       </nav>
@@ -331,22 +422,94 @@ export default function LandingPage() {
               Challenge developers worldwide in instant, 1v1 timed coding battles. Write clean code, run test cases in isolated sandboxes, and climb the global ladder.
             </p>
 
-            <div className="flex flex-wrap gap-4 mb-12">
-              <button 
-                id="start-duel-btn"
-                onClick={() => navigate('/duel', { state: { username: 'Guest' } })} 
-                className="btn-primary px-6 py-3.5 text-sm font-bold shadow-lg shadow-[#9d1f15]/30 group"
+            {/* Private vs Public Toggle Tabs */}
+            <div className="flex border-b border-white/[0.05] w-full max-w-sm mb-6 bg-[#1e1e20] p-1 rounded-xl">
+              <button
+                onClick={() => setMatchType('private')}
+                className={`flex-1 text-center py-2 text-xs font-bold uppercase tracking-wider rounded-lg transition-all ${
+                  matchType === 'private'
+                    ? 'bg-[#29292B] text-white border border-white/[0.05] shadow'
+                    : 'text-[#c9c7ba]/40 hover:text-[#c9c7ba]/70'
+                }`}
               >
-                <Sword size={16} className="group-hover:rotate-12 transition-transform text-white" /> Start a Duel
+                Private Duel
               </button>
-              <button 
-                id="watch-demo-btn"
-                onClick={() => navigate('/duel', { state: { username: 'DemoUser' } })} 
-                className="btn-outline px-6 py-3.5 text-sm font-bold border-[#c9c7ba]/15 hover:border-[#c9c7ba]/30"
+              <button
+                disabled
+                title="Public matchmaking coming soon"
+                className="flex-1 text-center py-2 text-xs font-bold uppercase tracking-wider rounded-lg text-[#c9c7ba]/20 cursor-not-allowed flex items-center justify-center gap-1.5"
               >
-                Watch Demo Match
+                Public Arena
+                <span className="text-[0.5rem] bg-[#9d1f15]/10 border border-[#9d1f15]/20 text-[#9d1f15] px-1.5 rounded uppercase font-extrabold tracking-normal">soon</span>
               </button>
             </div>
+
+            {/* Private Sub-options (Create vs Join) */}
+            {matchType === 'private' && (
+              <div className="w-full max-w-sm glass-card rounded-2xl p-5 border border-[#c9c7ba]/15 mb-8 animate-scale-up">
+                {/* Create vs Join Sub-toggle */}
+                <div className="flex bg-[#1e1e20] p-0.5 rounded-lg mb-5 border border-white/[0.02]">
+                  <button
+                    onClick={() => setPrivateAction('create')}
+                    className={`flex-1 text-center py-1.5 text-[0.65rem] font-extrabold uppercase tracking-widest rounded-md transition-all ${
+                      privateAction === 'create'
+                        ? 'bg-[#29292B] text-[#fbfb7a] shadow border border-white/[0.02]'
+                        : 'text-[#c9c7ba]/40 hover:text-[#c9c7ba]/70'
+                    }`}
+                  >
+                    Create Room
+                  </button>
+                  <button
+                    onClick={() => setPrivateAction('join')}
+                    className={`flex-1 text-center py-1.5 text-[0.65rem] font-extrabold uppercase tracking-widest rounded-md transition-all ${
+                      privateAction === 'join'
+                        ? 'bg-[#29292B] text-[#fbfb7a] shadow border border-white/[0.02]'
+                        : 'text-[#c9c7ba]/40 hover:text-[#c9c7ba]/70'
+                    }`}
+                  >
+                    Join Room
+                  </button>
+                </div>
+
+                {/* Sub-option Content */}
+                {privateAction === 'create' ? (
+                  <div className="flex flex-col gap-3.5 animate-fade-in">
+                    <p className="text-xs text-[#c9c7ba]/40 leading-relaxed">
+                      Initialize a private sandbox room. Share the code to challenge a specific coder 1v1.
+                    </p>
+                    <button
+                      id="start-duel-btn"
+                      onClick={handleStartDuel}
+                      className="btn-primary w-full py-3.5 text-sm font-bold shadow-lg shadow-[#9d1f15]/20 group"
+                    >
+                      <Sword size={15} className="group-hover:rotate-12 transition-transform text-white" /> Create Private Room
+                    </button>
+                  </div>
+                ) : (
+                  <div className="flex flex-col gap-4 animate-fade-in">
+                    <p className="text-xs text-[#c9c7ba]/40 leading-relaxed">
+                      Enter the 6-character room code to join your opponent's waiting lobby.
+                    </p>
+                    <div className="flex gap-2">
+                      <input
+                        type="text"
+                        placeholder="Room Code (e.g. Ab7X9P)"
+                        value={joinCode}
+                        onChange={(e) => setJoinCode(e.target.value.slice(0, 6))}
+                        className="bg-[#1e1e20] border border-white/[0.08] rounded-xl text-white font-mono-code text-sm px-4 py-2.5 flex-1 focus:outline-none focus:border-[#9d1f15]/50 placeholder-white/20 tracking-widest text-center"
+                      />
+                      <button
+                        onClick={handleJoinRoom}
+                        disabled={joinCode.length !== 6}
+                        className="btn-secondary px-5 py-2.5 text-xs font-bold disabled:opacity-40 disabled:cursor-not-allowed"
+                      >
+                        Join Room
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
 
             <div className="flex gap-4 items-center">
               <span className="flex h-3 w-3 relative">
@@ -602,7 +765,7 @@ export default function LandingPage() {
                     </div>
 
                     <div className="flex gap-2">
-                      <button className="btn-primary w-full text-xs py-2.5 shadow-none" onClick={() => navigate('/duel')}>
+                      <button className="btn-primary w-full text-xs py-2.5 shadow-none" onClick={handleStartDuel}>
                         Join Arena & Fight
                       </button>
                     </div>
