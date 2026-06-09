@@ -368,6 +368,12 @@ export default function LandingPage() {
             {user ? (
               <>
                 <button
+                  onClick={() => navigate('/practice')}
+                  className="btn-outline px-4 py-2 text-xs font-bold"
+                >
+                  Practice
+                </button>
+                <button
                   onClick={() => navigate('/submissions')}
                   className="btn-outline px-4 py-2 text-xs font-bold"
                 >
@@ -799,8 +805,8 @@ export default function LandingPage() {
                       ))}
                     </div>
 
-                    <button className="btn-outline w-full text-xs py-2.5 mt-2 flex items-center justify-center gap-1.5" onClick={() => navigate('/duel')}>
-                      <List size={13} /> View All Challenges
+                    <button className="btn-primary w-full text-xs py-2.5 mt-2 flex items-center justify-center gap-1.5" onClick={() => navigate('/practice')}>
+                      <BookOpen size={13} /> Start Practicing Now
                     </button>
                   </div>
                 )}

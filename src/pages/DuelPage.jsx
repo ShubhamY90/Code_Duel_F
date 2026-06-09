@@ -12,6 +12,7 @@ import { getStarterCode } from '../constants/starterTemplates';
 import { useAuth } from '../context/AuthContext';
 import { doc, onSnapshot, updateDoc, serverTimestamp } from 'firebase/firestore';
 import { db } from '../config/firebase';
+import IOBlock from '../components/IOBlock';
 
 // eslint-disable-next-line no-unused-vars
 const JUDGE0_BASE_URL = import.meta.env.VITE_JUDGE0_URL || '';
@@ -480,7 +481,7 @@ export default function DuelPage() {
   };
 
   return (
-    <div className={`flex flex-col bg-bg-space text-white ${editorFull ? 'h-screen' : 'min-h-screen'}`}>
+    <div className={"h-screen overflow-hidden flex flex-col bg-bg-space text-white"}>
       
       {/* ── IDE Header ── */}
       <header className="glass-nav flex items-center justify-between px-5 py-2.5 flex-shrink-0 z-20">
@@ -609,7 +610,7 @@ export default function DuelPage() {
       </header>
 
       {/* ── IDE Workspace ── */}
-      <div className={`flex flex-1 overflow-hidden relative ${editorFull ? '' : 'grid grid-cols-[380px_1fr]'}`}>
+      <div className={`flex-1 overflow-hidden ${editorFull ? 'grid grid-cols-1' : 'grid grid-cols-[42%_58%]'}`}>
         
         {/* Left Side Panel: Problem Statement (Always visible, decluttered) */}
         {!editorFull && (
@@ -706,27 +707,16 @@ export default function DuelPage() {
                           </div>
                           <div className="p-3.5 flex flex-col gap-3">
                             <div>
-                              <p className="text-[0.6rem] font-extrabold text-white/30 mb-1">Sample Input</p>
-                              <pre className="font-mono-code text-[0.7rem] text-brand-cyan bg-[#05050a]/60 border border-white/[0.03] rounded-lg p-2.5 whitespace-pre-wrap break-all">{formatNewlines(tc.input)}</pre>
-                              {(() => {
-                                const structured = parseStructuredInput(tc.input, problem.id);
-                                if (!structured) return null;
-                                return (
-                                  <div className="mt-1.5 flex flex-wrap gap-x-4 gap-y-1 text-[0.65rem] font-mono-code text-white/50 bg-[#05050a]/30 px-2.5 py-1.5 rounded-lg border border-white/[0.02]">
-                                    {Object.entries(structured).map(([key, val]) => (
-                                      <div key={key}>
-                                        <span className="text-brand-purple font-semibold">{key}</span>
-                                        <span className="text-white/20 mx-1">=</span>
-                                        <span className="text-white/80">{formatValue(val)}</span>
-                                      </div>
-                                    ))}
-                                  </div>
-                                );
-                              })()}
+                              <p className="text-[0.6rem] font-extrabold text-white/30 mb-1.5 flex items-center gap-1.5">
+                                <span className="inline-block w-1.5 h-1.5 rounded-full bg-brand-cyan" /> Input
+                              </p>
+                              <IOBlock value={tc.input} structuredInput={tc.structuredInput ?? tc.structured_input} color="text-brand-cyan" />
                             </div>
                             <div>
-                              <p className="text-[0.6rem] font-extrabold text-white/30 mb-1">Sample Output</p>
-                              <pre className="font-mono-code text-[0.7rem] text-brand-green bg-[#05050a]/60 border border-white/[0.03] rounded-lg p-2.5 whitespace-pre-wrap break-all">{formatNewlines(tc.output)}</pre>
+                              <p className="text-[0.6rem] font-extrabold text-white/30 mb-1.5 flex items-center gap-1.5">
+                                <span className="inline-block w-1.5 h-1.5 rounded-full bg-brand-green" /> Output
+                              </p>
+                              <IOBlock value={tc.output} color="text-brand-green" />
                             </div>
                             {tc.explanation && (
                               <div>
@@ -768,7 +758,7 @@ export default function DuelPage() {
         )}
 
         {/* Right Workspace Panel (Editor + Bottom console drawer) */}
-        <main className="flex flex-col flex-1 overflow-hidden bg-bg-panel relative">
+        <main className="flex flex-col overflow-hidden bg-bg-panel relative">
           
           {/* Language Selector Header */}
           <div className="flex items-center justify-between px-4 py-2 bg-bg-panel border-b border-white/[0.04] flex-shrink-0">
@@ -800,7 +790,7 @@ export default function DuelPage() {
           </div>
 
           {/* Monaco Editor Container */}
-          <div className="flex-1 overflow-hidden relative">
+          <div className="flex-1 overflow-hidden min-h-0">
             <Editor
               height="100%"
               language={LANGUAGES.find(l => l.id === lang)?.monacoLang ?? 'javascript'}
@@ -831,13 +821,17 @@ export default function DuelPage() {
           </div>
 
           {/* ── COLLAPSIBLE BOTTOM CONSOLE DRAWER ── */}
-          <div className={`flex flex-col border-t border-white/[0.05] bg-bg-panel transition-all duration-300 z-10 ${
-            consoleOpen ? 'h-[250px]' : 'h-8'
-          }`}>
+          <div className={`absolute bottom-0 left-0 right-0 z-20 flex flex-col
+              bg-[#08080f]/95 backdrop-blur-md
+              border-t border-white/[0.07]
+              shadow-[0_-12px_40px_rgba(0,0,0,0.55)]
+              transition-[height] duration-300 ease-in-out
+              ${consoleOpen ? 'h-[300px]' : 'h-9'}
+            `}>
             {/* Console header / Toggle trigger */}
-            <div 
+            <button 
               onClick={() => setConsoleOpen(!consoleOpen)}
-              className="flex items-center justify-between px-4 py-1 bg-bg-panel border-b border-white/[0.03] cursor-pointer select-none hover:bg-white/[0.01]"
+              className="flex items-center justify-between px-4 h-9 w-full flex-shrink-0 group hover:bg-white/[0.02] transition-colors cursor-pointer select-none"
             >
               <div className="flex items-center gap-4">
                 <span className="flex items-center gap-1 text-[0.6rem] font-bold text-white/40 uppercase tracking-widest">
@@ -867,9 +861,9 @@ export default function DuelPage() {
               </div>
 
               <div>
-                {consoleOpen ? <ChevronDown size={13} className="text-white/40" /> : <ChevronUp size={13} className="text-white/40 animate-bounce" />}
+                <div className={`transition-transform duration-300 ${consoleOpen ? 'rotate-0' : 'rotate-180'}`}><ChevronDown size={12} className="text-white/30" /></div>
               </div>
-            </div>
+            </button>
 
             {/* Console body content */}
             {consoleOpen && (
@@ -906,36 +900,47 @@ export default function DuelPage() {
                     ) : (
                       <div className="flex flex-col gap-2">
                         {testResults.map((r, i) => (
-                          <div key={i} className={`rounded-lg border bg-[#05050a]/60 ${
-                            r.passed ? 'border-brand-green/20' : 'border-brand-red/20'
+                          <div key={i} className={`rounded-xl border-y border-r overflow-hidden ${
+                            r.passed
+                              ? 'bg-brand-green/[0.07] border-brand-green/40 border-l-[3px] border-l-[#22c55e]'
+                              : 'bg-brand-red/[0.07]   border-brand-red/40   border-l-[3px] border-l-[#ef4444]'
                           }`}>
-                            <div className="flex items-center justify-between px-3 py-2 border-b border-white/[0.02] text-[0.65rem] font-bold">
+                            <div className={`flex items-center justify-between px-3 py-2 border-b border-white/[0.05] ${
+                              r.passed ? 'bg-brand-green/[0.07]' : 'bg-brand-red/[0.07]'
+                            }`}>
                               <span className="flex items-center gap-1.5">
                                 {r.passed ? <CheckCircle size={12} className="text-brand-green" /> : <XCircle size={12} className="text-brand-red" />}
-                                <span>{r.label}</span>
+                                <span className={`text-[0.65rem] font-extrabold ${r.passed ? 'text-brand-green' : 'text-brand-red'}`}>{r.label}</span>
                               </span>
-                              <span className="text-white/20">{r.time}</span>
+                              <span className={`text-[0.6rem] font-bold px-2 py-0.5 rounded-full border ${
+                                r.passed
+                                  ? 'text-brand-green bg-brand-green/10 border-brand-green/30'
+                                  : 'text-brand-red   bg-brand-red/10   border-brand-red/30'
+                              }`}>
+                                {r.passed ? 'Accepted' : 'Wrong Answer'}{r.time && <span className="opacity-60 ml-1">{r.time}</span>}
+                              </span>
                             </div>
-                            <div className="p-3 text-[0.65rem] space-y-1">
+                            <div className="p-3 flex flex-col gap-2.5">
                               <div>
-                                <span className="text-white/20">Input: </span>
-                                <code className="text-white/60 whitespace-pre-wrap block p-1 mt-0.5 bg-[#05050a]/40 rounded border border-white/[0.02]">{formatNewlines(r.input)}</code>
-                                {(() => {
-                                  const structured = parseStructuredInput(r.input, problem?.id);
-                                  if (!structured) return null;
-                                  return (
-                                    <div className="mt-1 flex flex-wrap gap-x-3 text-[0.6rem] font-mono-code text-white/40 bg-[#05050a]/20 px-2 py-0.5 rounded border border-white/[0.01]">
-                                      {Object.entries(structured).map(([key, val]) => (
-                                        <span key={key}>
-                                          <span className="text-brand-purple/70 font-semibold">{key}</span>={formatValue(val)}
-                                        </span>
-                                      ))}
-                                    </div>
-                                  );
-                                })()}
+                                <p className="text-[0.55rem] font-bold uppercase tracking-wider text-white/25 mb-1.5 flex items-center gap-1.5">
+                                  <span className="inline-block w-1 h-1 rounded-full bg-brand-cyan" /> Input
+                                </p>
+                                <IOBlock value={r.input} structuredInput={r.structuredInput ?? r.structured_input} color="text-brand-cyan" />
                               </div>
-                              <div><span className="text-white/20">Expected: </span><code className="text-white/60 whitespace-pre-wrap block p-1 mt-0.5 bg-[#05050a]/40 rounded border border-white/[0.02]">{formatNewlines(r.expected)}</code></div>
-                              <div><span className="text-white/20">Returned: </span><code className={`${r.passed ? 'text-brand-green' : 'text-brand-red'} whitespace-pre-wrap block p-1 mt-0.5 bg-[#05050a]/40 rounded border border-white/[0.02]`}>{formatNewlines(r.got)}</code></div>
+                              <div>
+                                <p className="text-[0.55rem] font-bold uppercase tracking-wider text-white/25 mb-1.5 flex items-center gap-1.5">
+                                  <span className="inline-block w-1 h-1 rounded-full bg-brand-green" /> Expected
+                                </p>
+                                <IOBlock value={r.expected} color="text-brand-green" />
+                              </div>
+                              <div>
+                                <p className={`text-[0.55rem] font-bold uppercase tracking-wider mb-1.5 flex items-center gap-1.5 ${
+                                  r.passed ? 'text-brand-green' : 'text-white/25'
+                                }`}>
+                                  <span className={`inline-block w-1 h-1 rounded-full ${r.passed ? 'bg-brand-green' : 'bg-brand-red'}`} /> Your Output
+                                </p>
+                                <IOBlock value={r.got} color={r.passed ? 'text-brand-green' : 'text-brand-red'} />
+                              </div>
                             </div>
                           </div>
                         ))}

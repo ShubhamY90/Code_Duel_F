@@ -7,6 +7,7 @@ import DuelPage from './pages/DuelPage';
 import SubmissionsPage from './pages/SubmissionsPage';
 import RoomPage from './pages/RoomPage';
 import ResultsPage from './pages/ResultsPage';
+import PracticePage from './pages/PracticePage';
 
 export default function App() {
   return (
@@ -14,8 +15,9 @@ export default function App() {
       <BrowserRouter>
         <Routes>
           {/* Public routes */}
-          <Route path="/"     element={<LandingPage />} />
-          <Route path="/auth" element={<AuthPage />} />
+          <Route path="/"         element={<LandingPage />} />
+          <Route path="/auth"     element={<AuthPage />} />
+          <Route path="/practice" element={<PracticePage />} />
 
           {/* Protected routes — must be signed in */}
           <Route
