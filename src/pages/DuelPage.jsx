@@ -13,6 +13,7 @@ import { useAuth } from '../context/AuthContext';
 import { doc, onSnapshot, updateDoc, serverTimestamp } from 'firebase/firestore';
 import { db } from '../config/firebase';
 import IOBlock from '../components/IOBlock';
+import { parseProblemDescription } from '../utils/parseDescription';
 
 // eslint-disable-next-line no-unused-vars
 const JUDGE0_BASE_URL = import.meta.env.VITE_JUDGE0_URL || '';
@@ -659,22 +660,23 @@ export default function DuelPage() {
                       </span>
                     )}
                   </div>
-                  <h2 className="text-lg font-black tracking-tight text-white/90">{problem.title}</h2>
+                  <h2 className="text-2xl font-black tracking-tight text-white/95 leading-tight">{problem.title}</h2>
                 </div>
 
                 {/* Description */}
-                <div className="text-xs text-white/50 leading-relaxed font-normal whitespace-pre-wrap">
-                  {formatNewlines(problem.description)}
+                <div className="text-[0.82rem] text-slate-200/90 leading-relaxed font-sans select-text">
+                  {parseProblemDescription(problem.description)}
                 </div>
 
                 {/* Input Format */}
                 {problem.inputFormat && problem.inputFormat.length > 0 && (
                   <div>
-                    <p className="text-[0.6rem] font-extrabold uppercase tracking-[0.2em] text-white/30 mb-2">Input Format</p>
-                    <ul className="space-y-1">
+                    <p className="text-[0.65rem] font-black uppercase tracking-[0.2em] text-white/35 mb-2.5">Input Format</p>
+                    <ul className="space-y-1.5">
                       {problem.inputFormat.map((line, i) => (
-                        <li key={i} className="text-[0.7rem] text-white/40 flex gap-2">
-                          <span className="text-white/20 font-mono-code">{i + 1}.</span> {line}
+                        <li key={i} className="text-[0.8rem] text-slate-300 flex items-start gap-2.5 bg-white/[0.015] border border-white/[0.03] rounded-lg px-3 py-2">
+                          <span className="text-brand-purple font-bold font-mono text-[0.75rem] bg-brand-purple/10 px-1.5 py-0.5 rounded border border-brand-purple/20 select-none">{i + 1}</span> 
+                          <span className="flex-1 leading-relaxed">{line}</span>
                         </li>
                       ))}
                     </ul>
@@ -684,11 +686,12 @@ export default function DuelPage() {
                 {/* Output Format */}
                 {problem.outputFormat && problem.outputFormat.length > 0 && (
                   <div>
-                    <p className="text-[0.6rem] font-extrabold uppercase tracking-[0.2em] text-white/30 mb-2">Output Format</p>
-                    <ul className="space-y-1">
+                    <p className="text-[0.65rem] font-black uppercase tracking-[0.2em] text-white/35 mb-2.5">Output Format</p>
+                    <ul className="space-y-1.5">
                       {problem.outputFormat.map((line, i) => (
-                        <li key={i} className="text-[0.7rem] text-white/40 flex gap-2">
-                          <span className="text-white/20 font-mono-code">{i + 1}.</span> {line}
+                        <li key={i} className="text-[0.8rem] text-slate-300 flex items-start gap-2.5 bg-white/[0.015] border border-white/[0.03] rounded-lg px-3 py-2">
+                          <span className="text-brand-purple font-bold font-mono text-[0.75rem] bg-brand-purple/10 px-1.5 py-0.5 rounded border border-brand-purple/20 select-none">{i + 1}</span> 
+                          <span className="flex-1 leading-relaxed">{line}</span>
                         </li>
                       ))}
                     </ul>
@@ -698,30 +701,30 @@ export default function DuelPage() {
                 {/* Sample Test Cases */}
                 {problem.sampleTestCases && problem.sampleTestCases.length > 0 && (
                   <div>
-                    <p className="text-[0.6rem] font-extrabold uppercase tracking-[0.2em] text-white/30 mb-2.5">Sample Test Cases</p>
+                    <p className="text-[0.65rem] font-black uppercase tracking-[0.2em] text-white/35 mb-3">Sample Test Cases</p>
                     <div className="flex flex-col gap-3">
                       {problem.sampleTestCases.map((tc, i) => (
                         <div key={i} className="bg-bg-panel border border-white/[0.04] rounded-xl overflow-hidden">
-                          <div className="px-3.5 py-2 border-b border-white/[0.04] text-[0.6rem] font-bold text-white/30 uppercase tracking-widest">
+                          <div className="px-3.5 py-2.5 bg-white/[0.01] border-b border-white/[0.04] text-[0.65rem] font-bold text-white/35 uppercase tracking-widest">
                             Example {i + 1}
                           </div>
-                          <div className="p-3.5 flex flex-col gap-3">
+                          <div className="p-3.5 flex flex-col gap-3.5">
                             <div>
-                              <p className="text-[0.6rem] font-extrabold text-white/30 mb-1.5 flex items-center gap-1.5">
+                              <p className="text-[0.62rem] font-black uppercase tracking-wider text-slate-400/80 mb-1.5 flex items-center gap-1.5">
                                 <span className="inline-block w-1.5 h-1.5 rounded-full bg-brand-cyan" /> Input
                               </p>
                               <IOBlock value={tc.input} structuredInput={tc.structuredInput ?? tc.structured_input} color="text-brand-cyan" />
                             </div>
                             <div>
-                              <p className="text-[0.6rem] font-extrabold text-white/30 mb-1.5 flex items-center gap-1.5">
+                              <p className="text-[0.62rem] font-black uppercase tracking-wider text-slate-400/80 mb-1.5 flex items-center gap-1.5">
                                 <span className="inline-block w-1.5 h-1.5 rounded-full bg-brand-green" /> Output
                               </p>
                               <IOBlock value={tc.output} color="text-brand-green" />
                             </div>
                             {tc.explanation && (
-                              <div>
-                                <p className="text-[0.6rem] font-extrabold text-white/30 mb-1">Explanation</p>
-                                <p className="text-[0.65rem] text-white/40 italic leading-relaxed">{tc.explanation}</p>
+                              <div className="bg-brand-purple/5 border border-brand-purple/15 rounded-lg p-2.5">
+                                <p className="text-[0.6rem] font-extrabold text-brand-violet mb-1">💡 Explanation</p>
+                                <p className="text-[0.65rem] text-white/50 italic leading-relaxed">{tc.explanation}</p>
                               </div>
                             )}
                           </div>
@@ -734,18 +737,22 @@ export default function DuelPage() {
                 {/* Constraints */}
                 {problem.constraints && (
                   <div>
-                    <p className="text-[0.6rem] font-extrabold uppercase tracking-[0.2em] text-white/30 mb-2">Constraints</p>
+                    <p className="text-[0.65rem] font-black uppercase tracking-[0.2em] text-white/35 mb-2.5">Constraints</p>
                     {Array.isArray(problem.constraints) ? (
-                      <ul className="list-disc list-inside space-y-1 text-white/40 text-[0.65rem]">
+                      <ul className="space-y-1.5">
                         {problem.constraints.map((c, i) => (
-                          <li key={i} className="font-mono-code">{c}</li>
+                          <li key={i} className="font-mono text-[0.78rem] text-slate-300 bg-white/[0.015] border border-white/[0.03] rounded-lg px-3.5 py-2.5 flex items-center gap-2.5">
+                            <span className="w-1.5 h-1.5 rounded-full bg-brand-cyan/80 shrink-0" />
+                            <span>{c}</span>
+                          </li>
                         ))}
                       </ul>
                     ) : (
-                      <ul className="space-y-1">
+                      <ul className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                         {Object.entries(problem.constraints).map(([key, val]) => (
-                          <li key={key} className="font-mono-code text-[0.65rem] text-white/40 bg-white/[0.01] px-2 py-1 rounded border border-white/[0.02]">
-                            <span className="text-brand-cyan">{key}</span>: {val}
+                          <li key={key} className="font-mono text-[0.78rem] text-slate-300 bg-white/[0.015] border border-white/[0.03] px-3.5 py-2.5 rounded-lg flex flex-col gap-1 justify-center">
+                            <span className="text-brand-cyan/80 font-bold uppercase text-[0.6rem] tracking-wider">{key}</span>
+                            <span className="font-semibold text-white/90">{val}</span>
                           </li>
                         ))}
                       </ul>

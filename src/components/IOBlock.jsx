@@ -62,7 +62,7 @@ export default function IOBlock({ value, structuredInput, color = 'text-brand-cy
   /* ── Structured Input View ────────────────────────────────────────── */
   if (structuredRows && structuredRows.length > 0) {
     return (
-      <div className="font-mono text-[0.7rem] bg-[#05050a]/70 border border-white/[0.04] rounded-lg overflow-hidden">
+      <div className="font-mono text-[0.78rem] bg-[#070913]/90 border border-white/[0.06] rounded-xl overflow-hidden shadow-inner select-text">
         {structuredRows.map((row, i) => (
           <div
             key={i}
@@ -70,7 +70,7 @@ export default function IOBlock({ value, structuredInput, color = 'text-brand-cy
           >
             {/* Label gutter */}
             <span 
-              className="select-none shrink-0 w-[4.5rem] text-right pr-2.5 py-[3px] text-white/30 border-r border-white/[0.05] bg-white/[0.02] font-mono text-[0.6rem] leading-5 truncate"
+              className="select-none shrink-0 w-[5rem] text-right pr-3.5 py-2 text-white/30 border-r border-white/[0.05] bg-white/[0.01] font-mono text-[0.68rem] font-bold uppercase tracking-wider leading-5 truncate"
               title={row.label}
             >
               {row.label}
@@ -78,15 +78,15 @@ export default function IOBlock({ value, structuredInput, color = 'text-brand-cy
 
             {/* = separator */}
             {row.label && row.display ? (
-              <span className="shrink-0 px-1.5 py-[3px] text-white/15 leading-5 text-[0.6rem] select-none">
+              <span className="shrink-0 px-2.5 py-2 text-white/15 leading-5 text-[0.68rem] select-none">
                 =
               </span>
             ) : (
-              <span className="shrink-0 w-5" />
+              <span className="shrink-0 w-6" />
             )}
 
             {/* Value */}
-            <span className={`px-1 py-[3px] leading-5 break-all whitespace-pre-wrap flex-1 font-mono ${color}`}>
+            <span className={`px-2.5 py-2 leading-5 break-all whitespace-pre-wrap flex-1 font-mono ${color}`}>
               {row.display || '\u00A0'}
             </span>
           </div>
@@ -99,13 +99,13 @@ export default function IOBlock({ value, structuredInput, color = 'text-brand-cy
   const lines = parseIO(value).split('\n');
 
   return (
-    <div className="font-mono text-[0.7rem] bg-[#05050a]/70 border border-white/[0.04] rounded-lg overflow-hidden">
+    <div className="font-mono text-[0.78rem] bg-[#070913]/90 border border-white/[0.06] rounded-xl overflow-hidden shadow-inner select-text">
       {lines.map((line, i) => (
         <div key={i} className={`flex ${i % 2 === 0 ? 'bg-white/[0.012]' : ''}`}>
-          <span className="select-none w-6 shrink-0 text-right pr-2 py-[3px] text-white/15 border-r border-white/[0.04] bg-white/[0.02] text-[0.6rem] leading-5">
+          <span className="select-none w-7 shrink-0 text-right pr-2.5 py-2 text-white/20 border-r border-white/[0.05] bg-white/[0.01] text-[0.68rem] leading-5">
             {i + 1}
           </span>
-          <span className={`px-2.5 py-[3px] leading-5 break-all whitespace-pre-wrap ${color}`}>
+          <span className={`px-3.5 py-2 leading-5 break-all whitespace-pre-wrap ${color}`}>
             {line || '\u00A0'}
           </span>
         </div>
