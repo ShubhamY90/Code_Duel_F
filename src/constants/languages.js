@@ -42,4 +42,4 @@ export const MONACO_LANG = Object.fromEntries(
 );
 
 /** Default language for new sessions */
-export const DEFAULT_LANGUAGE = 'javascript';
+export const DEFAULT_LANGUAGE = 'cpp';

@@ -145,7 +145,7 @@ export default function PracticePage() {
           'Content-Type':  'application/json',
           'Authorization': `Bearer ${idToken}`,
         },
-        body: JSON.stringify({ problemId: problem.id, code }),
+        body: JSON.stringify({ problemId: problem.id, code, language: lang }),
       });
 
       const data = await res.json();
@@ -168,7 +168,7 @@ export default function PracticePage() {
     } finally {
       setIsRunning(false);
     }
-  }, [problem, code, user, COMPILER_URL, isRunning]);
+  }, [problem, code, user, COMPILER_URL, isRunning, lang]);
 
   // ── Submit: calls /submit on Compiler Server ──────────────────────
   const handleSubmit = useCallback(async () => {
@@ -188,7 +188,7 @@ export default function PracticePage() {
           'Content-Type':  'application/json',
           'Authorization': `Bearer ${idToken}`,
         },
-        body: JSON.stringify({ problemId: problem.id, code }),
+        body: JSON.stringify({ problemId: problem.id, code, language: lang }),
       });
 
       const data = await res.json();
@@ -203,7 +203,7 @@ export default function PracticePage() {
     } finally {
       setIsSubmitting(false);
     }
-  }, [problem, code, user, COMPILER_URL, isSubmitting, isRunning]);
+  }, [problem, code, user, COMPILER_URL, isSubmitting, isRunning, lang]);
 
   const busy = isRunning || isSubmitting;
 
@@ -493,12 +493,12 @@ export default function PracticePage() {
                 className="appearance-none bg-bg-panel border border-white/[0.05] rounded-lg text-white/70 font-mono text-[0.65rem] py-1 pl-3 pr-8 cursor-pointer outline-none hover:border-white/15 focus:border-brand-purple/40"
               >
                 <optgroup label="Scripting">
-                  {LANGUAGES.filter(l => ['javascript','typescript','python','ruby','php','bash'].includes(l.id)).map(l => (
+                  {LANGUAGES.filter(l => ['python'].includes(l.id)).map(l => (
                     <option key={l.id} value={l.id}>{l.label}</option>
                   ))}
                 </optgroup>
                 <optgroup label="Systems">
-                  {LANGUAGES.filter(l => ['c','cpp','java','csharp','go','rust','swift','kotlin','scala'].includes(l.id)).map(l => (
+                  {LANGUAGES.filter(l => ['c','cpp','java'].includes(l.id)).map(l => (
                     <option key={l.id} value={l.id}>{l.label}</option>
                   ))}
                 </optgroup>
@@ -506,6 +506,14 @@ export default function PracticePage() {
               <ChevronDown size={10} className="absolute right-2.5 text-white/30 pointer-events-none" />
             </div>
           </div>
+
+          {/* Java public class warning notice */}
+          {lang === 'java' && (
+            <div className="bg-brand-amber/10 border-b border-brand-amber/20 px-4 py-1.5 flex items-center gap-2 text-[0.7rem] text-brand-amber font-sans select-none flex-shrink-0">
+              <span className="font-extrabold bg-brand-amber/20 px-1.5 py-0.5 rounded border border-brand-amber/30 uppercase text-[0.55rem] shrink-0">Main Class Notice</span>
+              <span>Your entrypoint class must be named <strong>Main</strong> (e.g. <code>public class Main {'{ ... }'}</code>).</span>
+            </div>
+          )}
 
           {/* Monaco Editor — always fills remaining height; console floats over it */}
           <div className="flex-1 overflow-hidden min-h-0">
