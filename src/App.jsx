@@ -20,14 +20,17 @@ export default function App() {
           <Route path="/practice" element={<PracticePage />} />
 
           {/* Protected routes — must be signed in */}
+          {/* Match results — reads from matches/{matchId} collection */}
           <Route
-            path="/room/:roomId/results"
+            path="/match/:matchId/results"
             element={
               <ProtectedRoute>
                 <ResultsPage />
               </ProtectedRoute>
             }
           />
+          {/* Legacy results route — rooms no longer hold result data; redirect home */}
+          <Route path="/room/:roomId/results" element={<Navigate to="/" replace />} />
           <Route
             path="/room/:roomId"
             element={

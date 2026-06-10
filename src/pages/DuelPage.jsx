@@ -10,7 +10,7 @@ import { useProblem } from '../hooks/useProblem';
 import { LANGUAGES, DEFAULT_LANGUAGE } from '../constants/languages';
 import { getStarterCode } from '../constants/starterTemplates';
 import { useAuth } from '../context/AuthContext';
-import { doc, onSnapshot, updateDoc, serverTimestamp } from 'firebase/firestore';
+import { doc, onSnapshot, updateDoc, serverTimestamp, addDoc, collection } from 'firebase/firestore';
 import { db } from '../config/firebase';
 import IOBlock from '../components/IOBlock';
 import { parseProblemDescription } from '../utils/parseDescription';
@@ -173,6 +173,8 @@ export default function DuelPage() {
   const displayName = (location.state?.username) || user?.displayName || user?.email?.split('@')[0] || 'Anonymous';
 
   const [room, setRoom] = useState(null);
+  const [roomNotFound, setRoomNotFound] = useState(false);
+  const [roomError, setRoomError] = useState(null);
   const [hostProfile, setHostProfile] = useState(null);
   const [guestProfile, setGuestProfile] = useState(null);
 
@@ -196,17 +198,27 @@ export default function DuelPage() {
   useEffect(() => {
     if (!roomId) return;
     const roomRef = doc(db, 'rooms', roomId);
-    const unsubscribe = onSnapshot(roomRef, (snapshot) => {
-      if (snapshot.exists()) {
+    const unsubscribe = onSnapshot(
+      roomRef,
+      (snapshot) => {
+        if (!snapshot.exists()) {
+          // Room was deleted or never existed — show error instead of loading forever
+          setRoomNotFound(true);
+          return;
+        }
         const data = snapshot.data();
         setRoom(data);
         
-        // Match completed -> redirect to Results Page
-        if (data.status === 'completed') {
-          navigate(`/room/${roomId}/results`);
+        // Match completed -> navigate to match results using matchId stored in room
+        if (data.status === 'completed' && data.matchId) {
+          navigate(`/match/${data.matchId}/results`);
         }
+      },
+      (err) => {
+        console.error('[DuelPage] Room listener error:', err);
+        setRoomError(err.message || 'Failed to connect to room.');
       }
-    });
+    );
     return unsubscribe;
   }, [roomId, navigate]);
 
@@ -273,21 +285,68 @@ export default function DuelPage() {
       if (secLeft <= 0) {
         clearInterval(interval);
         
-        // Host calculates the end of match on timeout
+        // Only the host writes the match result on timeout to avoid duplicate writes
         if (user && user.uid === room.hostId && room.status !== 'completed') {
           try {
             const hostScore = room.hostScore ?? 0;
             const guestScore = room.guestScore ?? 0;
+            const hostTestCasesPassed = room.hostScore ?? 0;
+            const guestTestCasesPassed = room.guestScore ?? 0;
+
+            // Tie-break: highest score → highest testCasesPassed → tie
             let winnerId = 'tie';
             if (hostScore > guestScore) {
               winnerId = room.hostId;
             } else if (guestScore > hostScore) {
               winnerId = room.guestId;
+            } else if (hostTestCasesPassed > guestTestCasesPassed) {
+              winnerId = room.hostId;
+            } else if (guestTestCasesPassed > hostTestCasesPassed) {
+              winnerId = room.guestId;
             }
+
+            const durationSeconds = Math.round(elapsedMs / 1000);
+            const completedAt = serverTimestamp();
+
+            // Build participants from room state
+            const participants = [
+              {
+                userId: room.hostId,
+                score: hostScore,
+                testCasesPassed: hostTestCasesPassed,
+                progress: room.hostProgress ?? 0,
+                bestCode: '',
+                solved: room.hostSolved ?? false,
+              },
+              {
+                userId: room.guestId,
+                score: guestScore,
+                testCasesPassed: guestTestCasesPassed,
+                progress: room.guestProgress ?? 0,
+                bestCode: '',
+                solved: room.guestSolved ?? false,
+              },
+            ];
+
+            // Write match document to matches collection
+            const matchRef = await addDoc(collection(db, 'matches'), {
+              roomCode: room.roomCode,
+              problemId: room.problemId,
+              winnerId,
+              participantIds: [room.hostId, room.guestId],
+              completionReason: 'timeout',
+              startedAt: room.startedAt,
+              completedAt,
+              durationSeconds,
+              participants,
+            });
+
+            // Update room with matchId and mark completed
             await updateDoc(doc(db, 'rooms', roomId), {
               status: 'completed',
               winnerId,
-              completedAt: serverTimestamp()
+              matchId: matchRef.id,
+              completedAt,
             });
           } catch (err) {
             console.error('Failed to end match on timeout:', err);
@@ -297,7 +356,7 @@ export default function DuelPage() {
     }, 1000);
 
     return () => clearInterval(interval);
-  }, [room?.startedAt, room?.hostId, room?.hostScore, room?.guestScore, room?.status, user, roomId]);
+  }, [room?.startedAt, room?.hostId, room?.hostScore, room?.guestScore, room?.guestProgress, room?.hostProgress, room?.hostSolved, room?.guestSolved, room?.status, room?.roomCode, room?.problemId, room?.guestId, user, roomId]);
 
   // UI States
   const [editorFull, setEditorFull] = useState(false);
@@ -375,15 +434,53 @@ export default function DuelPage() {
 
     try {
       const roomRef = doc(db, 'rooms', roomId);
-      const isHost = user.uid === room.hostId;
-      const opponentId = isHost ? room.guestId : room.hostId;
-      
+      const isHostPlayer = user.uid === room.hostId;
+      const opponentId = isHostPlayer ? room.guestId : room.hostId;
+
+      const startedAtMs = room.startedAt?.toMillis ? room.startedAt.toMillis() : Date.now();
+      const durationSeconds = Math.round((Date.now() - startedAtMs) / 1000);
+      const completedAt = serverTimestamp();
+
+      const participants = [
+        {
+          userId: room.hostId,
+          score: room.hostScore ?? 0,
+          testCasesPassed: room.hostScore ?? 0,
+          progress: room.hostProgress ?? 0,
+          bestCode: isHostPlayer ? code : '',
+          solved: room.hostSolved ?? false,
+        },
+        {
+          userId: room.guestId,
+          score: room.guestScore ?? 0,
+          testCasesPassed: room.guestScore ?? 0,
+          progress: room.guestProgress ?? 0,
+          bestCode: !isHostPlayer ? code : '',
+          solved: room.guestSolved ?? false,
+        },
+      ];
+
+      // Write match document
+      const matchRef = await addDoc(collection(db, 'matches'), {
+        roomCode: room.roomCode,
+        problemId: room.problemId,
+        winnerId: opponentId,
+        participantIds: [room.hostId, room.guestId],
+        completionReason: 'surrender',
+        startedAt: room.startedAt,
+        completedAt,
+        durationSeconds,
+        participants,
+      });
+
+      // Update room: mark completed, store matchId
       await updateDoc(roomRef, {
         status: 'completed',
         winnerId: opponentId,
-        completedAt: serverTimestamp()
+        matchId: matchRef.id,
+        completedAt,
       });
-      navigate(`/room/${roomId}/results`);
+      // Navigation handled by onSnapshot listener
     } catch (err) {
       console.error('Failed to leave match:', err);
     }
@@ -430,7 +527,7 @@ export default function DuelPage() {
 
       setTestResults(results.length ? results : null);
 
-      const isHost = user.uid === room?.hostId;
+      const isHostPlayer = user.uid === room?.hostId;
       const solved = (passed === total && total > 0);
 
       // Update room document in Firestore
@@ -438,28 +535,68 @@ export default function DuelPage() {
         const roomRef = doc(db, 'rooms', roomId);
         const updateData = {};
         
-        if (isHost) {
+        if (isHostPlayer) {
           updateData.hostScore = passed;
           updateData.hostProgress = Math.round((passed / total) * 100);
           if (solved) {
             updateData.hostSolved = true;
+            updateData.hostBestCode = code;
           }
         } else {
           updateData.guestScore = passed;
           updateData.guestProgress = Math.round((passed / total) * 100);
           if (solved) {
             updateData.guestSolved = true;
+            updateData.guestBestCode = code;
           }
         }
 
-        // If this player solved it, they instantly win the match!
+        // If this player solved it, create match doc and mark room completed
         if (solved) {
+          const startedAtMs = room.startedAt?.toMillis ? room.startedAt.toMillis() : Date.now();
+          const durationSeconds = Math.round((Date.now() - startedAtMs) / 1000);
+          const completedAt = serverTimestamp();
+
+          const participants = [
+            {
+              userId: room.hostId,
+              score: isHostPlayer ? passed : (room.hostScore ?? 0),
+              testCasesPassed: isHostPlayer ? passed : (room.hostScore ?? 0),
+              progress: isHostPlayer ? Math.round((passed / total) * 100) : (room.hostProgress ?? 0),
+              bestCode: isHostPlayer ? code : (room.hostBestCode ?? ''),
+              solved: isHostPlayer ? true : (room.hostSolved ?? false),
+            },
+            {
+              userId: room.guestId,
+              score: !isHostPlayer ? passed : (room.guestScore ?? 0),
+              testCasesPassed: !isHostPlayer ? passed : (room.guestScore ?? 0),
+              progress: !isHostPlayer ? Math.round((passed / total) * 100) : (room.guestProgress ?? 0),
+              bestCode: !isHostPlayer ? code : (room.guestBestCode ?? ''),
+              solved: !isHostPlayer ? true : (room.guestSolved ?? false),
+            },
+          ];
+
+          // Write match document to matches collection
+          const matchRef = await addDoc(collection(db, 'matches'), {
+            roomCode: room.roomCode,
+            problemId: room.problemId,
+            winnerId: user.uid,
+            participantIds: [room.hostId, room.guestId],
+            completionReason: 'solved',
+            startedAt: room.startedAt,
+            completedAt,
+            durationSeconds,
+            participants,
+          });
+
           updateData.status = 'completed';
           updateData.winnerId = user.uid;
-          updateData.completedAt = serverTimestamp();
+          updateData.matchId = matchRef.id;
+          updateData.completedAt = completedAt;
         }
 
         await updateDoc(roomRef, updateData);
+        // Navigation on solve is handled by onSnapshot listener detecting status=completed + matchId
       }
 
       if (data.success) {
@@ -480,6 +617,37 @@ export default function DuelPage() {
     Medium: 'text-brand-amber bg-brand-amber/10 border-brand-amber/20', 
     Hard: 'text-brand-red bg-brand-red/10 border-brand-red/20' 
   };
+
+  // ── Room not found / error guard (MUST be after all hooks) ──
+  if (roomNotFound || roomError) {
+    return (
+      <div className="min-h-screen bg-bg-space flex flex-col items-center justify-center gap-6 px-6 text-center">
+        <div className="fixed inset-0 z-0 pointer-events-none" aria-hidden="true">
+          <div className="orb w-[500px] h-[500px] bg-brand-red opacity-[0.05] -top-32 -left-32 animate-float" />
+          <div className="grid-bg" />
+        </div>
+        <div className="glass-card max-w-md w-full p-8 rounded-2xl border border-brand-red/20 relative z-10 flex flex-col items-center gap-4">
+          <WifiOff size={32} className="text-brand-red/70" />
+          <div>
+            <h2 className="text-lg font-black tracking-wider text-white mb-2 uppercase">
+              {roomNotFound ? 'Room Not Found' : 'Connection Error'}
+            </h2>
+            <p className="text-sm text-white/50">
+              {roomNotFound
+                ? 'This match room no longer exists or was never created.'
+                : roomError}
+            </p>
+          </div>
+          <button
+            onClick={() => navigate('/')}
+            className="btn-primary w-full mt-2"
+          >
+            ← Back to Arena Home
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className={"h-screen overflow-hidden flex flex-col bg-bg-space text-white"}>

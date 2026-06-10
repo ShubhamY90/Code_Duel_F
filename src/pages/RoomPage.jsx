@@ -160,18 +160,32 @@ export default function RoomPage() {
       return;
     }
 
-    // Only allow leaving if no guest has joined
-    if (!room.guestId) {
-      if (user && user.uid === room.hostId) {
-        try {
-          await deleteDoc(doc(db, 'rooms', roomId));
-          console.log(`[RoomPage] Host left. Room ${roomId} deleted.`);
-        } catch (err) {
-          console.error('Failed to delete room on host exit:', err);
-        }
+    // Host can leave when room is in waiting or ready state (no match started)
+    if (user && user.uid === room.hostId && (room.status === 'waiting' || room.status === 'ready')) {
+      try {
+        await deleteDoc(doc(db, 'rooms', roomId));
+        console.log(`[RoomPage] Host left. Room ${roomId} deleted.`);
+      } catch (err) {
+        console.error('Failed to delete room on host exit:', err);
       }
       navigate('/');
     }
+  };
+
+  // Guest leaves before match starts — resets room to waiting so a new guest can join
+  const handleGuestLeave = async () => {
+    if (!room || !user || user.uid !== room.guestId) return;
+    try {
+      await updateDoc(doc(db, 'rooms', roomId), {
+        guestId: null,
+        guestReady: false,
+        status: 'waiting',
+      });
+      console.log(`[RoomPage] Guest left. Room ${roomId} reset to waiting.`);
+    } catch (err) {
+      console.error('Failed to leave lobby as guest:', err);
+    }
+    navigate('/');
   };
 
   // Toggle ready status in Firestore
@@ -279,10 +293,18 @@ export default function RoomPage() {
             <span className="font-extrabold">Code<span className="text-gradient-brand">Duel</span></span>
           </div>
           
-          {/* Hide Return to Lobby when 2 people have joined */}
-          {!bothJoined ? (
+          {/* Show leave options based on role and room status */}
+          {/* Host: can leave if room not yet active */}
+          {isHost && (room?.status === 'waiting' || room?.status === 'ready') ? (
             <button
               onClick={handleLeaveLobby}
+              className="btn-outline px-4 py-2 text-xs font-bold flex items-center gap-1.5"
+            >
+              <ArrowLeft size={13} /> Leave Lobby
+            </button>
+          ) : isGuest && (room?.status === 'waiting' || room?.status === 'ready') ? (
+            <button
+              onClick={handleGuestLeave}
               className="btn-outline px-4 py-2 text-xs font-bold flex items-center gap-1.5"
             >
               <ArrowLeft size={13} /> Leave Lobby

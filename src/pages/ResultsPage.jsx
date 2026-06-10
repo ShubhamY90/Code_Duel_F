@@ -3,87 +3,76 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { doc, onSnapshot } from 'firebase/firestore';
 import { db } from '../config/firebase';
 import { useAuth } from '../context/AuthContext';
-import { Trophy, Award, ArrowLeft, Loader2, Users, Flame, Star } from 'lucide-react';
+import { Trophy, Award, ArrowLeft, Loader2, Users, Flame, Star, Clock, Zap, Flag } from 'lucide-react';
 
 export default function ResultsPage() {
-  const { roomId } = useParams();
+  const { matchId } = useParams();
   const navigate = useNavigate();
   const { user } = useAuth();
 
-  const [room, setRoom] = useState(null);
+  const [match, setMatch] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
-  const [hostProfile, setHostProfile] = useState(null);
-  const [guestProfile, setGuestProfile] = useState(null);
+  // Profile states keyed by userId
+  const [profiles, setProfiles] = useState({});
 
   const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:4000';
 
-  // Subscribe to room updates
+  // Subscribe to match document from matches collection
   useEffect(() => {
-    if (!roomId) return;
+    if (!matchId) return;
 
     setLoading(true);
-    const roomRef = doc(db, 'rooms', roomId);
+    const matchRef = doc(db, 'matches', matchId);
 
     const unsubscribe = onSnapshot(
-      roomRef,
+      matchRef,
       (snapshot) => {
         if (!snapshot.exists()) {
-          setError('Room data not found.');
+          setError('Match data not found.');
           setLoading(false);
           return;
         }
-        setRoom(snapshot.data());
+        setMatch({ id: snapshot.id, ...snapshot.data() });
         setLoading(false);
       },
       (err) => {
-        console.error('Failed to get room results:', err);
+        console.error('Failed to get match results:', err);
         setError('Failed to fetch match results.');
         setLoading(false);
       }
     );
 
     return unsubscribe;
-  }, [roomId]);
+  }, [matchId]);
 
-  // Fetch Host profile details
+  // Fetch profiles for all participants by userId
   useEffect(() => {
-    if (!room?.hostId) return;
+    if (!match?.participantIds?.length) return;
 
-    async function fetchHostProfile() {
-      try {
-        const res = await fetch(`${API_BASE}/api/users/${room.hostId}`);
-        if (res.ok) {
-          const data = await res.json();
-          setHostProfile(data);
-        }
-      } catch (err) {
-        console.warn('Failed to resolve host profile:', err);
-      }
+    async function fetchProfiles() {
+      const fetched = {};
+      await Promise.all(
+        match.participantIds.map(async (uid) => {
+          try {
+            const res = await fetch(`${API_BASE}/api/users/${uid}`);
+            if (res.ok) {
+              const data = await res.json();
+              fetched[uid] = data;
+            } else {
+              fetched[uid] = { displayName: `Player (${uid.slice(0, 6)})` };
+            }
+          } catch {
+            fetched[uid] = { displayName: 'Player' };
+          }
+        })
+      );
+      setProfiles(fetched);
     }
 
-    fetchHostProfile();
-  }, [room?.hostId, API_BASE]);
-
-  // Fetch Guest profile details
-  useEffect(() => {
-    if (!room?.guestId) return;
-
-    async function fetchGuestProfile() {
-      try {
-        const res = await fetch(`${API_BASE}/api/users/${room.guestId}`);
-        if (res.ok) {
-          const data = await res.json();
-          setGuestProfile(data);
-        }
-      } catch (err) {
-        console.warn('Failed to resolve guest profile:', err);
-      }
-    }
-
-    fetchGuestProfile();
-  }, [room?.guestId, API_BASE]);
+    fetchProfiles();
+  }, [match?.participantIds, API_BASE]);
 
   if (loading) {
     return (
@@ -100,7 +89,7 @@ export default function ResultsPage() {
     );
   }
 
-  if (error || !room) {
+  if (error || !match) {
     return (
       <div className="min-h-screen bg-[#0B0C10] flex flex-col items-center justify-center gap-6 relative overflow-hidden px-6 text-center">
         <div className="fixed inset-0 z-0 pointer-events-none" aria-hidden="true">
@@ -118,16 +107,29 @@ export default function ResultsPage() {
     );
   }
 
-  const isHost = user && user.uid === room.hostId;
-  const isGuest = user && user.uid === room.guestId;
-
-  // Determine game outcome
-  let resultType = 'defeat'; // victory | defeat | tie
-  if (room.winnerId === 'tie') {
+  // Determine outcome for the current user
+  let resultType = 'defeat';
+  if (match.winnerId === 'tie') {
     resultType = 'tie';
-  } else if (user && room.winnerId === user.uid) {
+  } else if (user && match.winnerId === user.uid) {
     resultType = 'victory';
   }
+
+  // Format duration as MM:SS
+  const formatDuration = (secs) => {
+    if (!secs && secs !== 0) return '—';
+    const m = Math.floor(secs / 60).toString().padStart(2, '0');
+    const s = (secs % 60).toString().padStart(2, '0');
+    return `${m}:${s}`;
+  };
+
+  // Completion reason display config
+  const reasonConfig = {
+    solved: { label: 'Solved', icon: <Zap size={11} />, color: 'text-brand-green bg-brand-green/10 border-brand-green/25' },
+    timeout: { label: 'Timeout', icon: <Clock size={11} />, color: 'text-brand-amber bg-brand-amber/10 border-brand-amber/25' },
+    surrender: { label: 'Surrender', icon: <Flag size={11} />, color: 'text-brand-red bg-brand-red/10 border-brand-red/25' },
+  };
+  const reason = reasonConfig[match.completionReason] ?? { label: match.completionReason ?? '—', icon: null, color: 'text-white/40 bg-white/5 border-white/10' };
 
   // Display texts & styling details
   const config = {
@@ -136,23 +138,31 @@ export default function ResultsPage() {
       subtitle: 'Outstanding clash! You conquered the arena.',
       textColor: 'text-brand-green',
       glowColor: 'shadow-[#00E676]/10 border-[#00E676]/30 bg-[#00E676]/5',
-      icon: <Trophy size={42} className="text-[#00E676]" />
+      icon: <Trophy size={42} className="text-[#00E676]" />,
     },
     tie: {
       title: 'Tie / Dual Victory',
       subtitle: 'An equal match! You both fought to a standstill.',
       textColor: 'text-[#fbfb7a]',
       glowColor: 'shadow-[#fbfb7a]/10 border-[#fbfb7a]/30 bg-[#fbfb7a]/5',
-      icon: <Users size={42} className="text-[#fbfb7a]" />
+      icon: <Users size={42} className="text-[#fbfb7a]" />,
     },
     defeat: {
       title: 'Defeat',
-      subtitle: 'Gg! Study your opponent\'s code and fight again.',
+      subtitle: "Gg! Study your opponent's code and fight again.",
       textColor: 'text-brand-red',
       glowColor: 'shadow-[#FF2E2E]/10 border-[#FF2E2E]/30 bg-[#FF2E2E]/5',
-      icon: <Flame size={42} className="text-danger animate-pulse" />
-    }
+      icon: <Flame size={42} className="text-danger animate-pulse" />,
+    },
   }[resultType];
+
+  // Build participant display list — never rely on array index, always find by userId
+  const participantDisplayList = (match.participantIds ?? []).map((uid) => {
+    const participant = (match.participants ?? []).find((p) => p.userId === uid) ?? {};
+    const profile = profiles[uid] ?? {};
+    const isWinner = match.winnerId === uid;
+    return { uid, participant, profile, isWinner };
+  });
 
   return (
     <div className="min-h-screen bg-[#0B0C10] text-[#c9c7ba] flex flex-col relative overflow-hidden select-none">
@@ -165,7 +175,7 @@ export default function ResultsPage() {
 
       {/* ── MAIN CONTENT ── */}
       <main className="relative z-10 flex-1 max-w-2xl mx-auto w-full px-6 py-16 flex flex-col justify-center items-center">
-        
+
         {/* Outcome Card */}
         <div className={`w-full glass-card rounded-3xl p-8 border ${config.glowColor} flex flex-col items-center text-center shadow-2xl mb-8 animate-scale-up`}>
           <div className="p-5 rounded-2xl bg-white/[0.02] border border-white/[0.04] mb-6">
@@ -175,53 +185,62 @@ export default function ResultsPage() {
           <h1 className={`text-4xl md:text-5xl font-black tracking-widest uppercase ${config.textColor} mb-2`}>
             {config.title}
           </h1>
-          <p className="text-xs md:text-sm text-[#c9c7ba]/65 leading-relaxed max-w-sm mb-8">
+          <p className="text-xs md:text-sm text-[#c9c7ba]/65 leading-relaxed max-w-sm mb-4">
             {config.subtitle}
           </p>
 
-          {/* Scores details */}
-          <div className="w-full grid grid-cols-2 gap-4 border-t border-b border-white/[0.05] py-6 mb-8">
-            {/* Host Stats */}
-            <div className="flex flex-col items-center">
-              <span className="text-[0.6rem] font-bold uppercase tracking-[0.2em] text-[#c9c7ba]/35 mb-2">Host</span>
-              <div className="w-10 h-10 rounded-xl bg-gradient-brand flex items-center justify-center text-white text-sm font-black border border-white/10 mb-2 uppercase">
-                {hostProfile?.photoURL ? (
-                  <img src={hostProfile.photoURL} alt={hostProfile?.displayName} className="w-full h-full object-cover rounded-xl" />
-                ) : (
-                  hostProfile?.displayName?.slice(0, 2) || 'H'
-                )}
-              </div>
-              <span className="text-xs font-black text-white uppercase tracking-wide">
-                {hostProfile?.displayName || 'Host'}
+          {/* Completion reason + duration badges */}
+          <div className="flex items-center gap-2 mb-8">
+            <span className={`inline-flex items-center gap-1 text-[0.6rem] font-extrabold uppercase tracking-wider px-2.5 py-1 rounded-full border ${reason.color}`}>
+              {reason.icon} {reason.label}
+            </span>
+            {match.durationSeconds != null && (
+              <span className="inline-flex items-center gap-1 text-[0.6rem] font-extrabold uppercase tracking-wider px-2.5 py-1 rounded-full border text-white/50 bg-white/[0.03] border-white/10">
+                <Clock size={11} /> {formatDuration(match.durationSeconds)}
               </span>
-              <span className="text-lg font-mono-code font-black text-white/90 mt-1">
-                {room.hostScore ?? 0} <span className="text-xs text-[#c9c7ba]/30 font-sans">passed</span>
-              </span>
-            </div>
+            )}
+          </div>
 
-            {/* Guest Stats */}
-            <div className="flex flex-col items-center">
-              <span className="text-[0.6rem] font-bold uppercase tracking-[0.2em] text-[#c9c7ba]/35 mb-2">Guest</span>
-              <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-[#fbfb7a]/20 to-[#c9c7ba]/20 flex items-center justify-center text-[#fbfb7a] text-sm font-black border border-[#fbfb7a]/20 mb-2 uppercase">
-                {guestProfile?.photoURL ? (
-                  <img src={guestProfile.photoURL} alt={guestProfile?.displayName} className="w-full h-full object-cover rounded-xl" />
-                ) : (
-                  guestProfile?.displayName?.slice(0, 2) || 'G'
+          {/* Participant score cards */}
+          <div className="w-full grid grid-cols-2 gap-4 border-t border-b border-white/[0.05] py-6 mb-8">
+            {participantDisplayList.map(({ uid, participant, profile, isWinner }) => (
+              <div key={uid} className="flex flex-col items-center">
+                {isWinner && match.winnerId !== 'tie' && (
+                  <span className="inline-flex items-center gap-1 text-[0.55rem] font-black uppercase text-[#fbfb7a] mb-1">
+                    <Trophy size={10} /> Winner
+                  </span>
+                )}
+                {match.winnerId === 'tie' && (
+                  <span className="text-[0.55rem] font-black uppercase text-[#fbfb7a] mb-1">Tie</span>
+                )}
+                {!isWinner && match.winnerId !== 'tie' && (
+                  <span className="text-[0.55rem] font-black uppercase text-white/20 mb-1">—</span>
+                )}
+                <div className="w-10 h-10 rounded-xl bg-gradient-brand flex items-center justify-center text-white text-sm font-black border border-white/10 mb-2 uppercase overflow-hidden">
+                  {profile?.photoURL ? (
+                    <img src={profile.photoURL} alt={profile?.displayName} className="w-full h-full object-cover" />
+                  ) : (
+                    profile?.displayName?.slice(0, 2) || uid.slice(0, 2)
+                  )}
+                </div>
+                <span className="text-xs font-black text-white uppercase tracking-wide">
+                  {profile?.displayName || uid.slice(0, 8)}
+                </span>
+                <span className="text-lg font-mono-code font-black text-white/90 mt-1">
+                  {participant.testCasesPassed ?? participant.score ?? 0}{' '}
+                  <span className="text-xs text-[#c9c7ba]/30 font-sans">passed</span>
+                </span>
+                {participant.solved && (
+                  <span className="text-[0.55rem] font-black uppercase text-brand-green mt-0.5">✓ Solved</span>
                 )}
               </div>
-              <span className="text-xs font-black text-white uppercase tracking-wide">
-                {guestProfile?.displayName || 'Guest'}
-              </span>
-              <span className="text-lg font-mono-code font-black text-white/90 mt-1">
-                {room.guestScore ?? 0} <span className="text-xs text-[#c9c7ba]/30 font-sans">passed</span>
-              </span>
-            </div>
+            ))}
           </div>
 
           {/* Problem Info */}
           <div className="flex items-center gap-2 px-4 py-2 bg-white/[0.02] border border-white/[0.04] rounded-xl text-xs text-[#c9c7ba]/50 font-bold uppercase">
             <Star size={13} className="text-[#fbfb7a]" />
-            <span>Problem ID: {room.problemId}</span>
+            <span>Problem ID: {match.problemId}</span>
           </div>
         </div>
 
