@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { doc, onSnapshot, updateDoc, deleteDoc, serverTimestamp } from 'firebase/firestore';
+import { doc, onSnapshot, updateDoc, deleteDoc, serverTimestamp, deleteField } from 'firebase/firestore';
 import { db } from '../config/firebase';
 import { useAuth } from '../context/AuthContext';
 import { 
@@ -11,15 +11,15 @@ export default function RoomPage() {
   const { roomId } = useParams();
   const navigate = useNavigate();
   const { user } = useAuth();
+  const displayName = user?.displayName || user?.email?.split('@')[0] || 'Anonymous';
   
   const [room, setRoom] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [copied, setCopied] = useState(false);
 
-  // User profile states to resolve IDs to names
-  const [hostProfile, setHostProfile] = useState(null);
-  const [guestProfile, setGuestProfile] = useState(null);
+  // User profile states keyed by userId
+  const [profiles, setProfiles] = useState({});
 
   // Lobby 5-minute expiration countdown timer state
   const [timeLeft, setTimeLeft] = useState(300);
@@ -64,9 +64,10 @@ export default function RoomPage() {
 
   // Handle 5-minute lobby expiration countdown
   useEffect(() => {
-    if (!room?.createdAt || room.guestId) {
-      if (room?.guestId) {
-        setTimeLeft(0); // Stop countdown once guest joins
+    const participantsCount = Object.keys(room?.participants || {}).length;
+    if (!room?.createdAt || participantsCount > 1) {
+      if (participantsCount > 1) {
+        setTimeLeft(0); // Stop countdown once another player joins
       }
       return;
     }
@@ -81,8 +82,8 @@ export default function RoomPage() {
       if (secLeft <= 0) {
         clearInterval(interval);
         
-        // Host cleans up the expired room in Firestore
-        if (user && user.uid === room.hostId && !room.guestId) {
+        // Creator cleans up the expired room in Firestore
+        if (user && user.uid === room.creatorId && participantsCount === 1) {
           try {
             await deleteDoc(doc(db, 'rooms', roomId));
             console.log(`[RoomPage] Room ${roomId} deleted due to expiration.`);
@@ -96,54 +97,41 @@ export default function RoomPage() {
     }, 1000);
 
     return () => clearInterval(interval);
-  }, [room?.createdAt, room?.guestId, room?.hostId, user, roomId, navigate]);
+  }, [room?.createdAt, room?.participants, room?.creatorId, user, roomId, navigate]);
 
-  // Fetch host user profile whenever hostId changes
+  // Fetch profiles for all participants
   useEffect(() => {
-    if (!room?.hostId) return;
+    const uids = Object.keys(room?.participants || {});
+    if (uids.length === 0) return;
 
-    async function fetchHostProfile() {
-      try {
-        const res = await fetch(`${API_BASE}/api/users/${room.hostId}`);
-        if (res.ok) {
-          const data = await res.json();
-          setHostProfile(data);
-        } else {
-          setHostProfile({ displayName: `Host (ID: ${room.hostId.slice(0, 6)})` });
-        }
-      } catch (err) {
-        console.warn('Failed to resolve host profile:', err);
-        setHostProfile({ displayName: 'Host' });
+    async function fetchProfiles() {
+      const fetched = { ...profiles };
+      let changed = false;
+      await Promise.all(
+        uids.map(async (uid) => {
+          if (fetched[uid]) return; // already fetched
+          changed = true;
+          try {
+            const res = await fetch(`${API_BASE}/api/users/${uid}`);
+            if (res.ok) {
+              const data = await res.json();
+              fetched[uid] = data;
+            } else {
+              fetched[uid] = { displayName: `Player (${uid.slice(0, 6)})` };
+            }
+          } catch (err) {
+            console.warn(`Failed to resolve profile for ${uid}:`, err);
+            fetched[uid] = { displayName: 'Player' };
+          }
+        })
+      );
+      if (changed) {
+        setProfiles(fetched);
       }
     }
 
-    fetchHostProfile();
-  }, [room?.hostId, API_BASE]);
-
-  // Fetch guest user profile whenever guestId changes
-  useEffect(() => {
-    if (!room?.guestId) {
-      setGuestProfile(null);
-      return;
-    }
-
-    async function fetchGuestProfile() {
-      try {
-        const res = await fetch(`${API_BASE}/api/users/${room.guestId}`);
-        if (res.ok) {
-          const data = await res.json();
-          setGuestProfile(data);
-        } else {
-          setGuestProfile({ displayName: `Guest (ID: ${room.guestId.slice(0, 6)})` });
-        }
-      } catch (err) {
-        console.warn('Failed to resolve guest profile:', err);
-        setGuestProfile({ displayName: 'Guest' });
-      }
-    }
-
-    fetchGuestProfile();
-  }, [room?.guestId, API_BASE]);
+    fetchProfiles();
+  }, [room?.participants, API_BASE]);
 
   // Copy roomCode to clipboard
   const handleCopyCode = () => {
@@ -160,30 +148,28 @@ export default function RoomPage() {
       return;
     }
 
-    // Host can leave when room is in waiting or ready state (no match started)
-    if (user && user.uid === room.hostId && (room.status === 'waiting' || room.status === 'ready')) {
+    // Creator can leave and delete room when status is waiting
+    if (user && user.uid === room.creatorId && room.status === 'waiting') {
       try {
         await deleteDoc(doc(db, 'rooms', roomId));
-        console.log(`[RoomPage] Host left. Room ${roomId} deleted.`);
+        console.log(`[RoomPage] Creator left. Room ${roomId} deleted.`);
       } catch (err) {
-        console.error('Failed to delete room on host exit:', err);
+        console.error('Failed to delete room on creator exit:', err);
       }
       navigate('/');
     }
   };
 
-  // Guest leaves before match starts — resets room to waiting so a new guest can join
+  // Participant leaves before match starts — deletes their participant field
   const handleGuestLeave = async () => {
-    if (!room || !user || user.uid !== room.guestId) return;
+    if (!room || !user || user.uid === room.creatorId) return;
     try {
       await updateDoc(doc(db, 'rooms', roomId), {
-        guestId: null,
-        guestReady: false,
-        status: 'waiting',
+        [`participants.${user.uid}`]: deleteField(),
       });
-      console.log(`[RoomPage] Guest left. Room ${roomId} reset to waiting.`);
+      console.log(`[RoomPage] Participant left. Room ${roomId} entry removed.`);
     } catch (err) {
-      console.error('Failed to leave lobby as guest:', err);
+      console.error('Failed to leave lobby:', err);
     }
     navigate('/');
   };
@@ -192,23 +178,24 @@ export default function RoomPage() {
   const handleToggleReady = async () => {
     if (!room || !user) return;
     const roomRef = doc(db, 'rooms', roomId);
+    const currentReady = room.participants[user.uid]?.ready || false;
 
     try {
-      if (user.uid === room.hostId) {
-        await updateDoc(roomRef, { hostReady: !room.hostReady });
-      } else if (user.uid === room.guestId) {
-        await updateDoc(roomRef, { guestReady: !room.guestReady });
-      }
+      await updateDoc(roomRef, {
+        [`participants.${user.uid}.ready`]: !currentReady
+      });
     } catch (err) {
       console.error('Failed to update ready state:', err);
       alert('Error updating ready status: ' + err.message);
     }
   };
 
-  // Host starts the match
+  // Creator starts the match
   const handleStartMatch = async () => {
-    if (!room || !user || user.uid !== room.hostId) return;
-    if (!room.hostReady || !room.guestReady) return;
+    if (!room || !user || user.uid !== room.creatorId) return;
+    const participantsList = Object.values(room.participants || {});
+    const allReady = participantsList.length > 1 && participantsList.every(p => p.ready);
+    if (!allReady) return;
 
     const roomRef = doc(db, 'rooms', roomId);
     try {
@@ -216,7 +203,7 @@ export default function RoomPage() {
         status: 'active',
         startedAt: serverTimestamp()
       });
-      console.log(`[RoomPage] Host started duel.`);
+      console.log(`[RoomPage] Creator started duel.`);
     } catch (err) {
       console.error('Failed to start duel:', err);
       alert('Error starting duel: ' + err.message);
@@ -269,10 +256,11 @@ export default function RoomPage() {
   }
 
   // Determine current user's membership and ready status
-  const isHost = user && user.uid === room?.hostId;
-  const isGuest = user && user.uid === room?.guestId;
-  const bothJoined = !!room?.guestId;
-  const bothReady = room?.hostReady && room?.guestReady;
+  const isCreator = user && user.uid === room?.creatorId;
+  const isParticipant = user && !!room?.participants?.[user.uid];
+  const participantsCount = Object.keys(room?.participants || {}).length;
+  const bothJoined = participantsCount > 1;
+  const allReady = bothJoined && Object.values(room?.participants || {}).every(p => p.ready);
 
   return (
     <div className="min-h-screen bg-[#0B0C10] text-[#c9c7ba] flex flex-col relative overflow-hidden select-none">
@@ -294,15 +282,15 @@ export default function RoomPage() {
           </div>
           
           {/* Show leave options based on role and room status */}
-          {/* Host: can leave if room not yet active */}
-          {isHost && (room?.status === 'waiting' || room?.status === 'ready') ? (
+          {/* Creator: can leave if room not yet active */}
+          {isCreator && room?.status === 'waiting' ? (
             <button
               onClick={handleLeaveLobby}
               className="btn-outline px-4 py-2 text-xs font-bold flex items-center gap-1.5"
             >
               <ArrowLeft size={13} /> Leave Lobby
             </button>
-          ) : isGuest && (room?.status === 'waiting' || room?.status === 'ready') ? (
+          ) : isParticipant && !isCreator && room?.status === 'waiting' ? (
             <button
               onClick={handleGuestLeave}
               className="btn-outline px-4 py-2 text-xs font-bold flex items-center gap-1.5"
@@ -361,59 +349,30 @@ export default function RoomPage() {
         </div>
 
         {/* Players Grid */}
-        <div className="w-full grid md:grid-cols-2 gap-6 animate-fade-up animate-scale-up mb-8" style={{ animationDelay: '0.2s' }}>
-          
-          {/* Host Card */}
-          <div className="glass-card rounded-2xl p-6 border border-[#c9c7ba]/5 flex flex-col items-center justify-between text-center relative overflow-hidden min-h-[240px]">
-            {/* Crown decoration */}
-            <div className="absolute top-4 left-4 text-[#fbfb7a]" title="Room Host">
-              <Crown size={18} />
-            </div>
+        <div className="w-full grid grid-cols-1 sm:grid-cols-2 gap-6 animate-fade-up animate-scale-up mb-8" style={{ animationDelay: '0.2s' }}>
+          {Object.values(room?.participants || {}).map((participant) => {
+            const uid = participant.userId;
+            const profile = profiles[uid] || {};
+            const isUserCreator = uid === room.creatorId;
+            const isCurrent = uid === user?.uid;
 
-            {/* Ready Badge */}
-            <div className="absolute top-4 right-4">
-              {room?.hostReady ? (
-                <span className="inline-flex items-center gap-1 text-[0.55rem] font-black uppercase bg-[#00E676]/10 text-[#00E676] px-2 py-0.5 rounded border border-[#00E676]/20">
-                  Ready
-                </span>
-              ) : (
-                <span className="inline-flex items-center gap-1 text-[0.55rem] font-black uppercase bg-[#FFB000]/10 text-[#FFB000] px-2 py-0.5 rounded border border-[#FFB000]/20">
-                  Not Ready
-                </span>
-              )}
-            </div>
-
-            <div className="flex flex-col items-center mt-6">
-              <div className="w-16 h-16 rounded-2xl bg-gradient-brand flex items-center justify-center text-white text-2xl font-black shadow-lg shadow-[#9d1f15]/20 border border-white/10 mb-4 uppercase">
-                {hostProfile?.photoURL ? (
-                  <img src={hostProfile.photoURL} alt={hostProfile?.displayName} className="w-full h-full object-cover rounded-2xl" />
-                ) : (
-                  hostProfile?.displayName?.slice(0, 2) || 'H'
+            return (
+              <div
+                key={uid}
+                className={`glass-card rounded-2xl p-6 border flex flex-col items-center justify-between text-center relative overflow-hidden min-h-[240px] ${
+                  isCurrent ? 'border-[#9d1f15]/30 bg-[#9d1f15]/[0.02]' : 'border-[#c9c7ba]/5'
+                }`}
+              >
+                {/* Crown decoration */}
+                {isUserCreator && (
+                  <div className="absolute top-4 left-4 text-[#fbfb7a]" title="Room Creator">
+                    <Crown size={18} />
+                  </div>
                 )}
-              </div>
-              
-              <h3 className="text-sm font-extrabold text-white tracking-wide uppercase mb-1">
-                {hostProfile?.displayName || 'Host loading...'}
-              </h3>
-              <p className="text-[0.6rem] font-mono text-[#c9c7ba]/35 uppercase tracking-wider">
-                Rating: {hostProfile?.rating ?? '—'}
-              </p>
-            </div>
 
-            <div className="w-full border-t border-white/[0.04] pt-4 mt-4">
-              <span className="text-[0.65rem] font-bold uppercase tracking-wider text-[#fbfb7a]">
-                Host / Owner
-              </span>
-            </div>
-          </div>
-
-          {/* Guest Card */}
-          <div className="glass-card rounded-2xl p-6 border border-[#c9c7ba]/5 flex flex-col items-center justify-between text-center relative overflow-hidden min-h-[240px]">
-            {guestProfile ? (
-              <>
                 {/* Ready Badge */}
                 <div className="absolute top-4 right-4">
-                  {room?.guestReady ? (
+                  {participant.ready ? (
                     <span className="inline-flex items-center gap-1 text-[0.55rem] font-black uppercase bg-[#00E676]/10 text-[#00E676] px-2 py-0.5 rounded border border-[#00E676]/20">
                       Ready
                     </span>
@@ -425,89 +384,92 @@ export default function RoomPage() {
                 </div>
 
                 <div className="flex flex-col items-center mt-6">
-                  <div className="w-16 h-16 rounded-2xl bg-gradient-to-tr from-[#fbfb7a]/20 to-[#c9c7ba]/20 flex items-center justify-center text-[#fbfb7a] text-2xl font-black border border-[#fbfb7a]/20 mb-4 uppercase">
-                    {guestProfile?.photoURL ? (
-                      <img src={guestProfile.photoURL} alt={guestProfile?.displayName} className="w-full h-full object-cover rounded-2xl" />
+                  <div className="w-16 h-16 rounded-2xl bg-gradient-brand flex items-center justify-center text-white text-2xl font-black shadow-lg shadow-[#9d1f15]/20 border border-white/10 mb-4 uppercase overflow-hidden">
+                    {profile?.photoURL ? (
+                      <img src={profile.photoURL} alt={profile?.displayName} className="w-full h-full object-cover rounded-2xl" />
                     ) : (
-                      guestProfile?.displayName?.slice(0, 2) || 'G'
+                      profile?.displayName?.slice(0, 2) || uid.slice(0, 2)
                     )}
                   </div>
-                  
+
                   <h3 className="text-sm font-extrabold text-white tracking-wide uppercase mb-1">
-                    {guestProfile?.displayName}
+                    {profile?.displayName || (isCurrent ? displayName : `Player (${uid.slice(0, 6)})`)}
                   </h3>
                   <p className="text-[0.6rem] font-mono text-[#c9c7ba]/35 uppercase tracking-wider">
-                    Rating: {guestProfile?.rating ?? '—'}
+                    Rating: {profile?.rating ?? '—'}
                   </p>
                 </div>
 
                 <div className="w-full border-t border-white/[0.04] pt-4 mt-4">
                   <span className="text-[0.65rem] font-bold uppercase tracking-wider text-[#fbfb7a]">
-                    Guest / Opponent
+                    {isUserCreator ? 'Host / Creator' : 'Competitor'}
                   </span>
                 </div>
-              </>
-            ) : (
-              <div className="flex flex-col items-center justify-center flex-1 py-6 relative">
-                {/* Radar pulsing rings */}
-                <div className="relative w-14 h-14 flex items-center justify-center mb-4">
-                  <div className="absolute inset-0 rounded-full bg-[#fbfb7a]/5 border border-[#fbfb7a]/20 animate-radar-pulse" />
-                  <div className="absolute inset-0 rounded-full bg-[#fbfb7a]/5 border border-[#fbfb7a]/25 animate-radar-pulse" style={{ animationDelay: '0.7s' }} />
-                  
-                  <div className="relative w-9 h-9 rounded-xl bg-white/[0.02] border border-white/[0.05] flex items-center justify-center text-[#c9c7ba]/30">
-                    <UserPlus size={15} className="animate-pulse" />
-                  </div>
-                </div>
-
-                <h3 className="text-xs font-bold text-white/50 uppercase tracking-widest mb-1">
-                  Waiting for Guest
-                </h3>
-                <p className="text-[0.55rem] text-[#c9c7ba]/30 max-w-[170px] leading-relaxed">
-                  Share the code to start your private match.
-                </p>
               </div>
-            )}
-          </div>
+            );
+          })}
+
+          {/* Waiting slot placeholder if single player */}
+          {participantsCount < 2 && (
+            <div className="glass-card rounded-2xl p-6 border border-dashed border-[#c9c7ba]/15 flex flex-col items-center justify-center text-center relative overflow-hidden min-h-[240px]">
+              {/* Radar pulsing rings */}
+              <div className="relative w-14 h-14 flex items-center justify-center mb-4">
+                <div className="absolute inset-0 rounded-full bg-[#fbfb7a]/5 border border-[#fbfb7a]/20 animate-radar-pulse" />
+                <div className="absolute inset-0 rounded-full bg-[#fbfb7a]/5 border border-[#fbfb7a]/25 animate-radar-pulse" style={{ animationDelay: '0.7s' }} />
+
+                <div className="relative w-9 h-9 rounded-xl bg-white/[0.02] border border-white/[0.05] flex items-center justify-center text-[#c9c7ba]/30">
+                  <UserPlus size={15} className="animate-pulse" />
+                </div>
+              </div>
+
+              <h3 className="text-xs font-bold text-white/50 uppercase tracking-widest mb-1">
+                Waiting for Competitors
+              </h3>
+              <p className="text-[0.55rem] text-[#c9c7ba]/30 max-w-[170px] leading-relaxed">
+                Share the code to invite others to the duel.
+              </p>
+            </div>
+          )}
         </div>
 
         {/* Readiness and Start Match Actions */}
         {bothJoined && (
           <div className="w-full max-w-md flex flex-col gap-4 animate-scale-up">
             {/* Ready/Not Ready Toggle button for current player */}
-            {(isHost || isGuest) && (
+            {isParticipant && (
               <button
                 onClick={handleToggleReady}
                 className={`w-full py-3 text-xs font-bold uppercase tracking-widest rounded-xl transition-all border ${
-                  (isHost && room.hostReady) || (isGuest && room.guestReady)
+                  room.participants[user.uid]?.ready
                     ? 'bg-danger/10 border-danger/30 text-[#FF2E2E] hover:bg-danger/15'
                     : 'bg-success/10 border-success/30 text-[#00E676] hover:bg-success/15'
                 }`}
               >
-                {(isHost && room.hostReady) || (isGuest && room.guestReady)
+                {room.participants[user.uid]?.ready
                   ? 'Set to Not Ready ❌'
                   : 'I am Ready! 🚀'}
               </button>
             )}
 
-            {/* Start Duel button for Owner/Host when both are ready */}
-            {isHost && (
+            {/* Start Duel button for Owner/Creator when all are ready */}
+            {isCreator && (
               <button
                 onClick={handleStartMatch}
-                disabled={!bothReady}
+                disabled={!allReady}
                 className={`w-full py-3.5 text-sm font-bold uppercase tracking-widest rounded-xl transition-all flex items-center justify-center gap-2 ${
-                  bothReady
+                  allReady
                     ? 'btn-primary shadow-lg shadow-[#9d1f15]/30 cursor-pointer border border-[#bd2e24]'
                     : 'bg-[#1e1e20] text-[#c9c7ba]/25 border border-white/[0.03] cursor-not-allowed'
                 }`}
               >
-                <Play size={14} className={bothReady ? 'animate-pulse' : ''} />
+                <Play size={14} className={allReady ? 'animate-pulse' : ''} />
                 Start Match ⚡
               </button>
             )}
 
-            {!bothReady && (
+            {!allReady && (
               <p className="text-[0.6rem] text-center text-[#c9c7ba]/30 uppercase tracking-wider">
-                Waiting for both players to declare ready...
+                Waiting for all players to declare ready...
               </p>
             )}
           </div>

@@ -202,7 +202,7 @@ export default function ResultsPage() {
           </div>
 
           {/* Participant score cards */}
-          <div className="w-full grid grid-cols-2 gap-4 border-t border-b border-white/[0.05] py-6 mb-8">
+          <div className="w-full grid grid-cols-1 sm:grid-cols-2 gap-4 border-t border-b border-white/[0.05] py-6 mb-8">
             {participantDisplayList.map(({ uid, participant, profile, isWinner }) => (
               <div key={uid} className="flex flex-col items-center">
                 {isWinner && match.winnerId !== 'tie' && (

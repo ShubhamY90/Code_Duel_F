@@ -175,11 +175,10 @@ export default function DuelPage() {
   const [room, setRoom] = useState(null);
   const [roomNotFound, setRoomNotFound] = useState(false);
   const [roomError, setRoomError] = useState(null);
-  const [hostProfile, setHostProfile] = useState(null);
-  const [guestProfile, setGuestProfile] = useState(null);
+  const [profiles, setProfiles] = useState({});
 
-  // Helper to determine if current player is the host
-  const isHost = user && room && user.uid === room.hostId;
+  // Helper to determine if current player is the creator
+  const isCreator = user && room && user.uid === room.creatorId;
 
   // URL param takes priority, then Firestore room, then navigation state
   const problemId = paramProblemId || room?.problemId || stateProblemId;
@@ -222,43 +221,39 @@ export default function DuelPage() {
     return unsubscribe;
   }, [roomId, navigate]);
 
-  // Fetch host user profile
+  // Fetch user profiles for all participants
   useEffect(() => {
-    if (!room?.hostId) return;
+    const uids = Object.keys(room?.participants || {});
+    if (uids.length === 0) return;
 
-    async function fetchHostProfile() {
-      try {
-        const res = await fetch(`${API_BASE}/api/users/${room.hostId}`);
-        if (res.ok) {
-          const data = await res.json();
-          setHostProfile(data);
-        }
-      } catch (err) {
-        console.warn('Failed to resolve host profile:', err);
+    async function fetchProfiles() {
+      const fetched = { ...profiles };
+      let changed = false;
+      await Promise.all(
+        uids.map(async (uid) => {
+          if (fetched[uid]) return;
+          changed = true;
+          try {
+            const res = await fetch(`${API_BASE}/api/users/${uid}`);
+            if (res.ok) {
+              const data = await res.json();
+              fetched[uid] = data;
+            } else {
+              fetched[uid] = { displayName: `Player (${uid.slice(0, 6)})` };
+            }
+          } catch (err) {
+            console.warn('Failed to resolve profile:', err);
+            fetched[uid] = { displayName: 'Player' };
+          }
+        })
+      );
+      if (changed) {
+        setProfiles(fetched);
       }
     }
 
-    fetchHostProfile();
-  }, [room?.hostId, API_BASE]);
-
-  // Fetch guest user profile
-  useEffect(() => {
-    if (!room?.guestId) return;
-
-    async function fetchGuestProfile() {
-      try {
-        const res = await fetch(`${API_BASE}/api/users/${room.guestId}`);
-        if (res.ok) {
-          const data = await res.json();
-          setGuestProfile(data);
-        }
-      } catch (err) {
-        console.warn('Failed to resolve guest profile:', err);
-      }
-    }
-
-    fetchGuestProfile();
-  }, [room?.guestId, API_BASE]);
+    fetchProfiles();
+  }, [room?.participants, API_BASE]);
 
   // Editor states
   const [lang, setLang] = useState(DEFAULT_LANGUAGE);
@@ -285,60 +280,69 @@ export default function DuelPage() {
       if (secLeft <= 0) {
         clearInterval(interval);
         
-        // Only the host writes the match result on timeout to avoid duplicate writes
-        if (user && user.uid === room.hostId && room.status !== 'completed') {
+        // Only the creator writes the match result on timeout to avoid duplicate writes
+        if (user && user.uid === room.creatorId && room.status !== 'completed') {
           try {
-            const hostScore = room.hostScore ?? 0;
-            const guestScore = room.guestScore ?? 0;
-            const hostTestCasesPassed = room.hostScore ?? 0;
-            const guestTestCasesPassed = room.guestScore ?? 0;
+            const participantsList = Object.values(room.participants || {});
+            let maxScore = -1;
+            let bestPlayers = [];
 
-            // Tie-break: highest score → highest testCasesPassed → tie
+            participantsList.forEach((p) => {
+              const pScore = p.score ?? 0;
+              if (pScore > maxScore) {
+                maxScore = pScore;
+                bestPlayers = [p];
+              } else if (pScore === maxScore) {
+                bestPlayers.push(p);
+              }
+            });
+
             let winnerId = 'tie';
-            if (hostScore > guestScore) {
-              winnerId = room.hostId;
-            } else if (guestScore > hostScore) {
-              winnerId = room.guestId;
-            } else if (hostTestCasesPassed > guestTestCasesPassed) {
-              winnerId = room.hostId;
-            } else if (guestTestCasesPassed > hostTestCasesPassed) {
-              winnerId = room.guestId;
+            if (bestPlayers.length === 1) {
+              winnerId = bestPlayers[0].userId;
+            } else {
+              // Tie break on testCasesPassed
+              let maxPassed = -1;
+              let bestPassedPlayers = [];
+              bestPlayers.forEach((p) => {
+                const passed = p.testCasesPassed ?? p.score ?? 0;
+                if (passed > maxPassed) {
+                  maxPassed = passed;
+                  bestPassedPlayers = [p];
+                } else if (passed === maxPassed) {
+                  bestPassedPlayers.push(p);
+                }
+              });
+              if (bestPassedPlayers.length === 1) {
+                winnerId = bestPassedPlayers[0].userId;
+              }
             }
 
             const durationSeconds = Math.round(elapsedMs / 1000);
             const completedAt = serverTimestamp();
 
-            // Build participants from room state
-            const participants = [
-              {
-                userId: room.hostId,
-                score: hostScore,
-                testCasesPassed: hostTestCasesPassed,
-                progress: room.hostProgress ?? 0,
-                bestCode: '',
-                solved: room.hostSolved ?? false,
-              },
-              {
-                userId: room.guestId,
-                score: guestScore,
-                testCasesPassed: guestTestCasesPassed,
-                progress: room.guestProgress ?? 0,
-                bestCode: '',
-                solved: room.guestSolved ?? false,
-              },
-            ];
+            // Build participants list
+            const finalParticipants = participantsList.map((p) => ({
+              userId: p.userId,
+              score: p.score ?? 0,
+              testCasesPassed: p.testCasesPassed ?? p.score ?? 0,
+              progress: p.progress ?? 0,
+              bestCode: p.bestCode ?? '',
+              solved: p.solved ?? false,
+              surrendered: p.surrendered ?? false,
+            }));
 
             // Write match document to matches collection
             const matchRef = await addDoc(collection(db, 'matches'), {
               roomCode: room.roomCode,
               problemId: room.problemId,
               winnerId,
-              participantIds: [room.hostId, room.guestId],
+              participantIds: Object.keys(room.participants),
               completionReason: 'timeout',
               startedAt: room.startedAt,
               completedAt,
               durationSeconds,
-              participants,
+              participants: finalParticipants,
             });
 
             // Update room with matchId and mark completed
@@ -356,7 +360,7 @@ export default function DuelPage() {
     }, 1000);
 
     return () => clearInterval(interval);
-  }, [room?.startedAt, room?.hostId, room?.hostScore, room?.guestScore, room?.guestProgress, room?.hostProgress, room?.hostSolved, room?.guestSolved, room?.status, room?.roomCode, room?.problemId, room?.guestId, user, roomId]);
+  }, [room?.startedAt, room?.creatorId, room?.participants, room?.status, room?.roomCode, room?.problemId, user, roomId]);
 
   // UI States
   const [editorFull, setEditorFull] = useState(false);
@@ -365,6 +369,34 @@ export default function DuelPage() {
   const [testResults, setTestResults] = useState(null);
   const [submitError, setSubmitError] = useState(null);
   
+  // Custom input states
+  const [useCustomInput, setUseCustomInput] = useState(false);
+  const [customInputText, setCustomInputText] = useState('');
+  const [customInputError, setCustomInputError] = useState(null);
+  const [isCustomRun, setIsCustomRun] = useState(false);
+  const [compileError, setCompileError] = useState(null);
+  const [runVerdict, setRunVerdict] = useState(null);
+
+  // Initialize customInputText with first sample testcase
+  useEffect(() => {
+    if (problem && problem.sampleTestCases && problem.sampleTestCases.length > 0) {
+      setCustomInputText(problem.sampleTestCases[0].input || '');
+      setCustomInputError(null);
+    } else {
+      setCustomInputText('');
+      setCustomInputError(null);
+    }
+  }, [problem]);
+
+  const handleCustomInputChange = (value) => {
+    setCustomInputText(value);
+    if (!value.trim()) {
+      setCustomInputError("Input cannot be empty");
+    } else {
+      setCustomInputError(null);
+    }
+  };
+
   // Console panel states
   const [consoleOpen, setConsoleOpen] = useState(false);
   const [consoleTab, setConsoleTab] = useState('tests'); // tests | output
@@ -381,40 +413,87 @@ export default function DuelPage() {
     setLang(newLang);
     setCode(getStarterCode(newLang, problem));
     setTestResults(null);
+    setCompileError(null);
+    setRunVerdict(null);
   };
 
   const handleReset = () => {
     setCode(getStarterCode(lang, problem));
     setTestResults(null);
     setSubmitError(null);
+    setCompileError(null);
+    setRunVerdict(null);
   };
 
-  const handleRun = useCallback(() => {
-    if (!problem) return;
+  const handleRun = useCallback(async () => {
+    if (!problem || isRunning) return;
+
+    if (useCustomInput && !customInputText.trim()) {
+      setCustomInputError("Input cannot be empty");
+      setConsoleOpen(true);
+      setConsoleTab('tests');
+      return;
+    }
+
     setIsRunning(true);
     setConsoleOpen(true);
     setConsoleTab('tests');
+    setTestResults(null);
     setSubmitError(null);
+    setCompileError(null);
+    setRunVerdict(null);
+    setIsCustomRun(useCustomInput);
 
-    // Simulate compilation and test cases running
-    setTimeout(() => {
-      const visibleCases = problem.visibleTestCases ?? [];
-      const mockGotOutputs = ['[0,1]', '[]', '[1,2]', '[-1,-1]']; // standard fallback
-      const results = visibleCases.map((tc, idx) => {
-        const passed = idx % 2 === 0; // Simulate some passes
-        return {
-          label: tc.label ?? `Case ${idx + 1}`,
-          input: tc.input,
-          expected: tc.output,
-          got: passed ? tc.output : (mockGotOutputs[idx] ?? 'undefined'),
-          passed: passed,
-          time: '12ms',
-        };
+    try {
+      const compilerUrl = import.meta.env.VITE_COMPILER_URL || 'http://localhost:3005';
+      const idToken = user ? await user.getIdToken() : '';
+      
+      const requestBody = { problemId: problem.id, code };
+      if (useCustomInput) {
+        requestBody.customInput = customInputText;
+      }
+
+      const res = await fetch(`${compilerUrl}/run`, {
+        method: 'POST',
+        headers: { 
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${idToken}`
+        },
+        body: JSON.stringify(requestBody),
       });
-      setTestResults(results.length ? results : null);
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        throw new Error(data.message || `Server error ${res.status}`);
+      }
+
+      if (data.verdict === 'Compile Error' || data.compileError) {
+        setCompileError(data.compileError || 'Compilation failed.');
+        setRunVerdict('Compile Error');
+        setTestResults([]);
+      } else {
+        const mappedResults = (data.results ?? []).map((r) => ({
+          label: r.isCustom ? 'Custom Test Case' : `Case ${r.index}`,
+          input: r.input,
+          expected: r.expected,
+          got: r.got,
+          passed: r.passed,
+          time: r.time,
+          executionTime: r.executionTime,
+          verdict: r.verdict,
+          isCustom: r.isCustom,
+        }));
+        setTestResults(mappedResults);
+        setRunVerdict(data.verdict);
+      }
+    } catch (err) {
+      setSubmitError(err.message || 'Could not reach the compiler server.');
+      setRunVerdict('Error');
+    } finally {
       setIsRunning(false);
-    }, 1200);
-  }, [problem]);
+    }
+  }, [problem, code, user, useCustomInput, customInputText, isRunning]);
 
   // Warn on tab reload / close during match
   useEffect(() => {
@@ -429,58 +508,69 @@ export default function DuelPage() {
 
   const handleLeaveMatch = async () => {
     if (!room || !user) return;
-    const confirmLeave = window.confirm("Are you sure you want to leave the match? Leaving will count as a surrender, and your opponent will be declared the winner.");
+    const confirmLeave = window.confirm("Are you sure you want to leave the match? Leaving will count as a surrender.");
     if (!confirmLeave) return;
 
     try {
       const roomRef = doc(db, 'rooms', roomId);
-      const isHostPlayer = user.uid === room.hostId;
-      const opponentId = isHostPlayer ? room.guestId : room.hostId;
+      const participantsList = Object.values(room.participants || {});
+      const otherActivePlayers = participantsList.filter(p => p.userId !== user.uid && !p.surrendered);
 
       const startedAtMs = room.startedAt?.toMillis ? room.startedAt.toMillis() : Date.now();
       const durationSeconds = Math.round((Date.now() - startedAtMs) / 1000);
       const completedAt = serverTimestamp();
 
-      const participants = [
-        {
-          userId: room.hostId,
-          score: room.hostScore ?? 0,
-          testCasesPassed: room.hostScore ?? 0,
-          progress: room.hostProgress ?? 0,
-          bestCode: isHostPlayer ? code : '',
-          solved: room.hostSolved ?? false,
-        },
-        {
-          userId: room.guestId,
-          score: room.guestScore ?? 0,
-          testCasesPassed: room.guestScore ?? 0,
-          progress: room.guestProgress ?? 0,
-          bestCode: !isHostPlayer ? code : '',
-          solved: room.guestSolved ?? false,
-        },
-      ];
+      const isMatchOver = otherActivePlayers.length <= 1;
 
-      // Write match document
-      const matchRef = await addDoc(collection(db, 'matches'), {
-        roomCode: room.roomCode,
-        problemId: room.problemId,
-        winnerId: opponentId,
-        participantIds: [room.hostId, room.guestId],
-        completionReason: 'surrender',
-        startedAt: room.startedAt,
-        completedAt,
-        durationSeconds,
-        participants,
-      });
+      if (isMatchOver) {
+        const winnerId = otherActivePlayers.length === 1 ? otherActivePlayers[0].userId : 'tie';
 
-      // Update room: mark completed, store matchId
-      await updateDoc(roomRef, {
-        status: 'completed',
-        winnerId: opponentId,
-        matchId: matchRef.id,
-        completedAt,
-      });
-      // Navigation handled by onSnapshot listener
+        const finalParticipants = participantsList.map((p) => {
+          const isCurrent = p.userId === user.uid;
+          return {
+            userId: p.userId,
+            score: isCurrent ? 0 : (p.score ?? 0),
+            testCasesPassed: isCurrent ? 0 : (p.testCasesPassed ?? p.score ?? 0),
+            progress: isCurrent ? 0 : (p.progress ?? 0),
+            bestCode: isCurrent ? code : (p.bestCode ?? ''),
+            solved: isCurrent ? false : (p.solved ?? false),
+            surrendered: isCurrent ? true : (p.surrendered ?? false),
+          };
+        });
+
+        const matchRef = await addDoc(collection(db, 'matches'), {
+          roomCode: room.roomCode,
+          problemId: room.problemId,
+          winnerId,
+          participantIds: Object.keys(room.participants),
+          completionReason: 'surrender',
+          startedAt: room.startedAt,
+          completedAt,
+          durationSeconds,
+          participants: finalParticipants,
+        });
+
+        await updateDoc(roomRef, {
+          [`participants.${user.uid}.score`]: 0,
+          [`participants.${user.uid}.testCasesPassed`]: 0,
+          [`participants.${user.uid}.progress`]: 0,
+          [`participants.${user.uid}.solved`]: false,
+          [`participants.${user.uid}.surrendered`]: true,
+          status: 'completed',
+          winnerId,
+          matchId: matchRef.id,
+          completedAt,
+        });
+      } else {
+        await updateDoc(roomRef, {
+          [`participants.${user.uid}.score`]: 0,
+          [`participants.${user.uid}.testCasesPassed`]: 0,
+          [`participants.${user.uid}.progress`]: 0,
+          [`participants.${user.uid}.solved`]: false,
+          [`participants.${user.uid}.surrendered`]: true,
+        });
+        navigate('/');
+      }
     } catch (err) {
       console.error('Failed to leave match:', err);
     }
@@ -492,6 +582,9 @@ export default function DuelPage() {
     setConsoleOpen(true);
     setConsoleTab('tests');
     setSubmitError(null);
+    setCompileError(null);
+    setRunVerdict(null);
+    setIsCustomRun(false);
 
     try {
       const compilerUrl = import.meta.env.VITE_COMPILER_URL || 'http://localhost:3005';
@@ -511,6 +604,14 @@ export default function DuelPage() {
         throw new Error(data.message || `Server error ${res.status}`);
       }
 
+      if (data.verdict === 'Compile Error' || data.compileError) {
+        setCompileError(data.compileError || 'Compilation failed.');
+        setRunVerdict('Compile Error');
+        setTestResults([]);
+        setIsRunning(false);
+        return;
+      }
+
       // Map compiler verdict to UI results
       const total = data.total ?? 0;
       const passed = data.passed ?? 0;
@@ -523,32 +624,28 @@ export default function DuelPage() {
         got: i < passed ? '✓ Passed' : '✗ Failed',
         passed: i < passed,
         time: '—',
+        verdict: i < passed ? 'Accepted' : (data.verdict || 'Wrong Answer'),
       }));
 
       setTestResults(results.length ? results : null);
+      setRunVerdict(data.verdict);
 
-      const isHostPlayer = user.uid === room?.hostId;
       const solved = (passed === total && total > 0);
 
       // Update room document in Firestore
       if (room && roomId) {
         const roomRef = doc(db, 'rooms', roomId);
-        const updateData = {};
+        const userRef = `participants.${user.uid}`;
+        const progressVal = Math.round((passed / total) * 100);
+        const updateData = {
+          [`${userRef}.score`]: passed,
+          [`${userRef}.testCasesPassed`]: passed,
+          [`${userRef}.progress`]: progressVal,
+        };
         
-        if (isHostPlayer) {
-          updateData.hostScore = passed;
-          updateData.hostProgress = Math.round((passed / total) * 100);
-          if (solved) {
-            updateData.hostSolved = true;
-            updateData.hostBestCode = code;
-          }
-        } else {
-          updateData.guestScore = passed;
-          updateData.guestProgress = Math.round((passed / total) * 100);
-          if (solved) {
-            updateData.guestSolved = true;
-            updateData.guestBestCode = code;
-          }
+        if (solved) {
+          updateData[`${userRef}.solved`] = true;
+          updateData[`${userRef}.bestCode`] = code;
         }
 
         // If this player solved it, create match doc and mark room completed
@@ -557,36 +654,31 @@ export default function DuelPage() {
           const durationSeconds = Math.round((Date.now() - startedAtMs) / 1000);
           const completedAt = serverTimestamp();
 
-          const participants = [
-            {
-              userId: room.hostId,
-              score: isHostPlayer ? passed : (room.hostScore ?? 0),
-              testCasesPassed: isHostPlayer ? passed : (room.hostScore ?? 0),
-              progress: isHostPlayer ? Math.round((passed / total) * 100) : (room.hostProgress ?? 0),
-              bestCode: isHostPlayer ? code : (room.hostBestCode ?? ''),
-              solved: isHostPlayer ? true : (room.hostSolved ?? false),
-            },
-            {
-              userId: room.guestId,
-              score: !isHostPlayer ? passed : (room.guestScore ?? 0),
-              testCasesPassed: !isHostPlayer ? passed : (room.guestScore ?? 0),
-              progress: !isHostPlayer ? Math.round((passed / total) * 100) : (room.guestProgress ?? 0),
-              bestCode: !isHostPlayer ? code : (room.guestBestCode ?? ''),
-              solved: !isHostPlayer ? true : (room.guestSolved ?? false),
-            },
-          ];
+          const participantsList = Object.values(room.participants || {});
+          const finalParticipants = participantsList.map((p) => {
+            const isCurrent = p.userId === user.uid;
+            return {
+              userId: p.userId,
+              score: isCurrent ? passed : (p.score ?? 0),
+              testCasesPassed: isCurrent ? passed : (p.testCasesPassed ?? p.score ?? 0),
+              progress: isCurrent ? progressVal : (p.progress ?? 0),
+              bestCode: isCurrent ? code : (p.bestCode ?? ''),
+              solved: isCurrent ? true : (p.solved ?? false),
+              surrendered: p.surrendered ?? false,
+            };
+          });
 
           // Write match document to matches collection
           const matchRef = await addDoc(collection(db, 'matches'), {
             roomCode: room.roomCode,
             problemId: room.problemId,
             winnerId: user.uid,
-            participantIds: [room.hostId, room.guestId],
+            participantIds: Object.keys(room.participants),
             completionReason: 'solved',
             startedAt: room.startedAt,
             completedAt,
             durationSeconds,
-            participants,
+            participants: finalParticipants,
           });
 
           updateData.status = 'completed';
@@ -686,36 +778,36 @@ export default function DuelPage() {
         </div>
 
         {/* Players Progress Area */}
-        <div className="flex items-center gap-4 flex-1 max-w-sm mx-6">
-          <div className="flex-1">
-            <div className="flex justify-between text-[0.55rem] font-bold text-white/30 mb-1">
-              <span>{displayName}</span>
-              <span className="text-brand-violet font-semibold">
-                {isHost ? `${room?.hostScore ?? 0} Solved` : `${room?.guestScore ?? 0} Solved`}
-              </span>
-            </div>
-            <div className="h-1 bg-white/5 rounded-full overflow-hidden">
-              <div 
-                className="h-full bg-gradient-brand rounded-full transition-all duration-500" 
-                style={{ width: `${isHost ? (room?.hostProgress ?? 0) : (room?.guestProgress ?? 0)}%` }} 
-              />
-            </div>
-          </div>
-          <span className="text-xs flex-shrink-0 opacity-40">⚔️</span>
-          <div className="flex-1">
-            <div className="flex justify-between text-[0.55rem] font-bold text-white/30 mb-1">
-              <span>{isHost ? (guestProfile?.displayName || 'Opponent') : (hostProfile?.displayName || 'Host')}</span>
-              <span className="text-brand-pink font-semibold">
-                {isHost ? `${room?.guestScore ?? 0} Solved` : `${room?.hostScore ?? 0} Solved`}
-              </span>
-            </div>
-            <div className="h-1 bg-white/5 rounded-full overflow-hidden">
-              <div 
-                className="h-full bg-brand-pink rounded-full transition-all duration-500" 
-                style={{ width: `${isHost ? (room?.guestProgress ?? 0) : (room?.hostProgress ?? 0)}%` }} 
-              />
-            </div>
-          </div>
+        <div className="flex items-center gap-3 flex-1 overflow-x-auto mx-4 scrollbar-none py-1">
+          {Object.values(room?.participants || {}).map((participant) => {
+            const uid = participant.userId;
+            const profile = profiles[uid] || {};
+            const isCurrent = uid === user?.uid;
+            const pName = profile.displayName || (isCurrent ? displayName : `Player (${uid.slice(0, 6)})`);
+            const progressVal = participant.progress ?? 0;
+            const solved = participant.solved ?? false;
+            
+            return (
+              <div key={uid} className={`flex-1 min-w-[100px] max-w-[160px] p-1.5 rounded-lg border bg-white/[0.01] transition-all ${
+                isCurrent ? 'border-brand-purple/20 bg-brand-purple/[0.02]' : 'border-white/[0.03]'
+              }`}>
+                <div className="flex justify-between items-center text-[0.55rem] font-bold text-white/45 mb-1.5 px-0.5 truncate">
+                  <span className="truncate pr-1 select-none">{pName}</span>
+                  <span className={solved ? 'text-brand-green font-extrabold' : 'text-brand-violet font-semibold'}>
+                    {solved ? '✓ Solved' : `${participant.score ?? 0} Passed`}
+                  </span>
+                </div>
+                <div className="h-1 bg-white/5 rounded-full overflow-hidden">
+                  <div
+                    className={`h-full rounded-full transition-all duration-500 ${
+                      solved ? 'bg-brand-green' : isCurrent ? 'bg-gradient-brand' : 'bg-brand-pink'
+                    }`}
+                    style={{ width: `${progressVal}%` }}
+                  />
+                </div>
+              </div>
+            );
+          })}
         </div>
 
         {/* Action Buttons and Timer */}
@@ -1017,7 +1109,7 @@ export default function DuelPage() {
                   <div className="flex gap-2" onClick={e => e.stopPropagation()}>
                     <button 
                       onClick={() => setConsoleTab('tests')}
-                      className={`text-[0.6rem] font-extrabold uppercase px-2 py-0.5 rounded transition-all ${
+                      className={`text-[0.6rem] font-extrabold uppercase px-2 py-0.5 rounded transition-all cursor-pointer ${
                         consoleTab === 'tests' ? 'text-brand-violet bg-brand-purple/10' : 'text-white/35 hover:text-white/60'
                       }`}
                     >
@@ -1025,7 +1117,7 @@ export default function DuelPage() {
                     </button>
                     <button 
                       onClick={() => setConsoleTab('output')}
-                      className={`text-[0.6rem] font-extrabold uppercase px-2 py-0.5 rounded transition-all ${
+                      className={`text-[0.6rem] font-extrabold uppercase px-2 py-0.5 rounded transition-all cursor-pointer ${
                         consoleTab === 'output' ? 'text-brand-violet bg-brand-purple/10' : 'text-white/35 hover:text-white/60'
                       }`}
                     >
@@ -1035,8 +1127,25 @@ export default function DuelPage() {
                 )}
               </div>
 
-              <div>
-                <div className={`transition-transform duration-300 ${consoleOpen ? 'rotate-0' : 'rotate-180'}`}><ChevronDown size={12} className="text-white/30" /></div>
+              {/* Right side: verdict badge + chevron */}
+              <div className="flex items-center gap-3">
+                {runVerdict && (
+                  <span className={`text-[0.6rem] font-bold px-2 py-0.5 rounded border transition-all ${
+                    runVerdict === 'Success' || runVerdict === 'All Samples Passed' || runVerdict === 'Accepted'
+                      ? 'text-brand-green bg-brand-green/10 border-brand-green/30'
+                      : runVerdict === 'Compile Error'
+                        ? 'text-brand-pink bg-brand-pink/10 border-brand-pink/30'
+                        : 'text-brand-red bg-brand-red/10 border-brand-red/30'
+                  }`}>
+                    {runVerdict}
+                  </span>
+                )}
+                {isRunning && (
+                  <Loader2 size={11} className="animate-spin text-brand-purple" />
+                )}
+                <div className={`transition-transform duration-300 ${consoleOpen ? 'rotate-0' : 'rotate-180'}`}>
+                  <ChevronDown size={12} className="text-white/30" />
+                </div>
               </div>
             </button>
 
@@ -1044,9 +1153,18 @@ export default function DuelPage() {
             {consoleOpen && (
               <div className="flex-1 overflow-y-auto p-4 text-xs font-mono-code">
                 {submitError && (
-                  <div className="flex items-start gap-2 bg-brand-red/5 border border-brand-red/25 rounded-xl p-3 text-brand-red">
+                  <div className="flex items-start gap-2 bg-brand-red/5 border border-brand-red/25 rounded-xl p-3 text-brand-red mb-3">
                     <AlertTriangle size={13} className="flex-shrink-0 mt-0.5" />
                     <span>{submitError}</span>
+                  </div>
+                )}
+
+                {compileError && (
+                  <div className="flex flex-col gap-1.5 mb-4">
+                    <p className="text-[0.6rem] font-bold uppercase tracking-wider text-brand-pink">Compile Error</p>
+                    <pre className="text-[0.7rem] text-brand-pink/90 bg-brand-pink/5 border border-brand-pink/20 rounded-xl p-3 overflow-x-auto whitespace-pre-wrap select-text leading-relaxed">
+                      {compileError}
+                    </pre>
                   </div>
                 )}
 
@@ -1059,78 +1177,210 @@ export default function DuelPage() {
 
                 {!submitError && !isRunning && consoleTab === 'tests' && (
                   <div>
-                    {submitted && (
-                      <div className="flex items-center gap-2 bg-brand-green/10 border border-brand-green/20 rounded-xl p-3.5 mb-4 text-brand-green animate-fade-in">
-                        <CheckCircle size={16} className="flex-shrink-0" />
-                        <div className="text-xs font-sans">
-                          <strong className="font-extrabold block">Submission Successful!</strong>
-                          All test cases passed. You solved this problem in {formatTime(durationSec - timeLeft)}.
-                        </div>
-                      </div>
-                    )}
-                    {!testResults ? (
-                      <div className="text-center py-8 text-white/20">
-                        <span>Execute code run to check sample test assertions.</span>
+                    {/* Mode Toggle row */}
+                    <div className="flex items-center gap-2 mb-3 border-b border-white/[0.04] pb-2">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setUseCustomInput(false);
+                          setSubmitError(null);
+                        }}
+                        className={`px-3 py-1 rounded-lg text-[0.65rem] font-bold transition-all cursor-pointer ${
+                          !useCustomInput
+                            ? 'bg-white/10 text-white'
+                            : 'text-white/40 hover:text-white/60'
+                        }`}
+                      >
+                        Sample Test Cases
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setUseCustomInput(true);
+                          setSubmitError(null);
+                        }}
+                        className={`px-3 py-1 rounded-lg text-[0.65rem] font-bold transition-all cursor-pointer ${
+                          useCustomInput
+                            ? 'bg-white/10 text-white'
+                            : 'text-white/40 hover:text-white/60'
+                        }`}
+                      >
+                        Custom Input
+                      </button>
+                    </div>
+
+                    {!useCustomInput ? (
+                      /* Mode A: Standard sample cases */
+                      <div>
+                        {submitted && (
+                          <div className="flex items-center gap-2 bg-brand-green/10 border border-brand-green/20 rounded-xl p-3.5 mb-4 text-brand-green animate-fade-in">
+                            <CheckCircle size={16} className="flex-shrink-0" />
+                            <div className="text-xs font-sans">
+                              <strong className="font-extrabold block">Submission Successful!</strong>
+                              All test cases passed. You solved this problem in {formatTime(durationSec - timeLeft)}.
+                            </div>
+                          </div>
+                        )}
+                        {!testResults || isCustomRun ? (
+                          <div className="text-center py-8 text-white/20">
+                            <span>Execute code run to check sample test assertions.</span>
+                          </div>
+                        ) : (
+                          <div className="flex flex-col gap-2">
+                            {testResults.map((r, i) => {
+                              const isSkipped = r.verdict === 'Skipped';
+                              const isFailed = !r.passed;
+
+                              const accentBorder = r.passed ? 'border-l-[3px] border-l-[#22c55e]'
+                                : isSkipped ? 'border-l-[3px] border-l-white/20'
+                                : ['Time Limit Exceeded','Runtime Error','Compile Error'].includes(r.verdict)
+                                  ? 'border-l-[3px] border-l-[#f0729f]'
+                                  : 'border-l-[3px] border-l-[#ef4444]';
+
+                              const verdictColor = r.passed ? 'text-brand-green'
+                                : isSkipped ? 'text-white/30'
+                                : ['Time Limit Exceeded','Runtime Error','Compile Error'].includes(r.verdict)
+                                  ? 'text-brand-pink'
+                                  : 'text-brand-red';
+
+                              const verdictBg = r.passed ? 'bg-brand-green/[0.12] border-brand-green/50'
+                                : isSkipped ? 'bg-white/5 border-white/10'
+                                : 'bg-brand-red/[0.12] border-brand-red/50';
+
+                              return (
+                                <div key={i} className={`rounded-xl border-y border-r overflow-hidden ${verdictBg} ${accentBorder}`}>
+                                  <div className={`flex items-center justify-between px-3 py-2 border-b border-white/[0.05] ${verdictBg}`}>
+                                    <span className="flex items-center gap-1.5">
+                                      {r.passed ? (
+                                        <CheckCircle size={12} className="text-brand-green" />
+                                      ) : (
+                                        <XCircle size={12} className={verdictColor} />
+                                      )}
+                                      <span className={`text-[0.65rem] font-extrabold ${verdictColor}`}>{r.label}</span>
+                                    </span>
+                                    <span className={`text-[0.6rem] font-bold px-2 py-0.5 rounded-full border ${verdictBg} ${verdictColor}`}>
+                                      {r.verdict}{r.time && <span className="opacity-60 ml-1">{r.time}</span>}
+                                    </span>
+                                  </div>
+                                  <div className="p-3 flex flex-col gap-2.5">
+                                    <div>
+                                      <p className="text-[0.55rem] font-bold uppercase tracking-wider text-white/25 mb-1.5 flex items-center gap-1.5">
+                                        <span className="inline-block w-1 h-1 rounded-full bg-brand-cyan" /> Input
+                                      </p>
+                                      <IOBlock value={r.input} structuredInput={r.structuredInput ?? r.structured_input} color="text-brand-cyan" />
+                                    </div>
+                                    {r.expected !== '(hidden)' && (
+                                      <div>
+                                        <p className="text-[0.55rem] font-bold uppercase tracking-wider text-white/25 mb-1.5 flex items-center gap-1.5">
+                                          <span className="inline-block w-1 h-1 rounded-full bg-brand-green" /> Expected Output
+                                        </p>
+                                        <IOBlock value={r.expected} color="text-brand-green" />
+                                      </div>
+                                    )}
+                                    <div>
+                                      <p className={`text-[0.55rem] font-bold uppercase tracking-wider mb-1.5 flex items-center gap-1.5 ${
+                                        r.passed ? 'text-brand-green' : 'text-white/25'
+                                      }`}>
+                                        <span className={`inline-block w-1 h-1 rounded-full ${r.passed ? 'bg-brand-green' : 'bg-brand-red'}`} /> Your Output
+                                      </p>
+                                      {isSkipped ? (
+                                        <p className="text-[0.7rem] text-white/25 italic">Skipped due to earlier failure</p>
+                                      ) : (
+                                        <IOBlock value={r.got} color={r.passed ? 'text-brand-green' : 'text-brand-red'} />
+                                      )}
+                                    </div>
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        )}
                       </div>
                     ) : (
-                      <div className="flex flex-col gap-2">
-                        {testResults.map((r, i) => (
-                          <div key={i} className={`rounded-xl border-y border-r overflow-hidden ${
-                            r.passed
-                              ? 'bg-brand-green/[0.07] border-brand-green/40 border-l-[3px] border-l-[#22c55e]'
+                      /* Mode B: Custom Input Mode */
+                      <div className="flex flex-col gap-3">
+                        <div className="flex flex-col gap-1">
+                          <span className="text-[0.6rem] font-bold text-white/40 uppercase tracking-widest">Custom Stdin</span>
+                          <textarea
+                            value={customInputText}
+                            onChange={(e) => handleCustomInputChange(e.target.value)}
+                            placeholder="Enter stdin input to pass to the compiler..."
+                            rows={3}
+                            className="w-full bg-[#05050a]/60 border border-white/[0.08] rounded-xl p-3 font-mono text-[0.7rem] text-white outline-none focus:border-brand-purple/40 resize-none leading-relaxed"
+                          />
+                          <div className="flex items-center justify-between mt-1 px-1">
+                            <span className={`text-[0.62rem] font-medium ${customInputError ? 'text-brand-amber' : 'text-white/30'}`}>
+                              {customInputError ? `⚠️ ${customInputError}` : '✓ Input loaded'}
+                            </span>
+                            <button
+                              type="button"
+                              onClick={handleRun}
+                              disabled={isRunning || !!customInputError}
+                              className="btn-secondary px-3 py-1 text-[0.65rem] flex items-center gap-1 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed select-none"
+                            >
+                              {isRunning ? <Loader2 size={10} className="animate-spin" /> : <Play size={10} />}
+                              Run Custom Code
+                            </button>
+                          </div>
+                        </div>
+
+                        {testResults && isCustomRun && testResults.length > 0 && (
+                          <div className={`rounded-xl border-y border-r overflow-hidden mt-1 ${
+                            testResults[0].verdict === 'Finished'
+                              ? 'bg-brand-purple/[0.03] border-white/10 border-l-[3px] border-l-brand-purple'
                               : 'bg-brand-red/[0.07]   border-brand-red/40   border-l-[3px] border-l-[#ef4444]'
                           }`}>
                             <div className={`flex items-center justify-between px-3 py-2 border-b border-white/[0.05] ${
-                              r.passed ? 'bg-brand-green/[0.07]' : 'bg-brand-red/[0.07]'
+                              testResults[0].verdict === 'Finished' ? 'bg-brand-purple/[0.03]' : 'bg-brand-red/[0.07]'
                             }`}>
-                              <span className="flex items-center gap-1.5">
-                                {r.passed ? <CheckCircle size={12} className="text-brand-green" /> : <XCircle size={12} className="text-brand-red" />}
-                                <span className={`text-[0.65rem] font-extrabold ${r.passed ? 'text-brand-green' : 'text-brand-red'}`}>{r.label}</span>
+                              <span className="text-[0.65rem] font-extrabold uppercase tracking-wider text-white/70">
+                                Output
                               </span>
-                              <span className={`text-[0.6rem] font-bold px-2 py-0.5 rounded-full border ${
-                                r.passed
-                                  ? 'text-brand-green bg-brand-green/10 border-brand-green/30'
-                                  : 'text-brand-red   bg-brand-red/10   border-brand-red/30'
-                              }`}>
-                                {r.passed ? 'Accepted' : 'Wrong Answer'}{r.time && <span className="opacity-60 ml-1">{r.time}</span>}
-                              </span>
-                            </div>
-                            <div className="p-3 flex flex-col gap-2.5">
-                              <div>
-                                <p className="text-[0.55rem] font-bold uppercase tracking-wider text-white/25 mb-1.5 flex items-center gap-1.5">
-                                  <span className="inline-block w-1 h-1 rounded-full bg-brand-cyan" /> Input
-                                </p>
-                                <IOBlock value={r.input} structuredInput={r.structuredInput ?? r.structured_input} color="text-brand-cyan" />
-                              </div>
-                              <div>
-                                <p className="text-[0.55rem] font-bold uppercase tracking-wider text-white/25 mb-1.5 flex items-center gap-1.5">
-                                  <span className="inline-block w-1 h-1 rounded-full bg-brand-green" /> Expected
-                                </p>
-                                <IOBlock value={r.expected} color="text-brand-green" />
-                              </div>
-                              <div>
-                                <p className={`text-[0.55rem] font-bold uppercase tracking-wider mb-1.5 flex items-center gap-1.5 ${
-                                  r.passed ? 'text-brand-green' : 'text-white/25'
+                              <div className="flex items-center gap-1.5">
+                                {testResults[0].executionTime !== undefined && (
+                                  <span className="text-[0.6rem] text-white/30 font-mono bg-white/5 px-1.5 py-0.5 rounded">
+                                    Time: {testResults[0].executionTime} ms
+                                  </span>
+                                )}
+                                <span className={`text-[0.6rem] font-bold px-2 py-0.5 rounded border ${
+                                  testResults[0].verdict === 'Finished'
+                                    ? 'text-brand-purple bg-brand-purple/10 border-brand-purple/30'
+                                    : 'text-brand-red bg-brand-red/10 border-brand-red/30'
                                 }`}>
-                                  <span className={`inline-block w-1 h-1 rounded-full ${r.passed ? 'bg-brand-green' : 'bg-brand-red'}`} /> Your Output
-                                </p>
-                                <IOBlock value={r.got} color={r.passed ? 'text-brand-green' : 'text-brand-red'} />
+                                  {testResults[0].verdict}
+                                </span>
                               </div>
+                            </div>
+                            <div className="p-3">
+                              {testResults[0].got ? (
+                                <IOBlock 
+                                  value={testResults[0].got} 
+                                  color={testResults[0].verdict === 'Finished' ? 'text-white' : 'text-brand-red'} 
+                                />
+                              ) : (
+                                <span className="text-[0.7rem] text-white/20 italic">(no output)</span>
+                              )}
                             </div>
                           </div>
-                        ))}
+                        )}
                       </div>
                     )}
                   </div>
                 )}
 
                 {!submitError && !isRunning && consoleTab === 'output' && (
-                  <div className="text-white/40 p-2 text-[0.65rem] bg-[#05050a]/40 border border-white/[0.03] rounded-lg min-h-24">
-                    <code>
-                      Stdout logs empty.<br />
-                      --- Compilation Succeeded ---<br />
-                      All symbols compiled successfully under standard settings.
-                    </code>
+                  <div className="text-white/40 p-2 text-[0.65rem] bg-[#05050a]/40 border border-white/[0.03] rounded-lg min-h-24 font-mono leading-relaxed">
+                    {compileError ? (
+                      <span className="text-brand-pink">
+                        Compilation failed. Check the Compile Error panel above.
+                      </span>
+                    ) : (
+                      <code>
+                        Stdout logs empty.<br />
+                        --- Compilation Succeeded ---<br />
+                        All symbols compiled successfully under standard settings.
+                      </code>
+                    )}
                   </div>
                 )}
               </div>
