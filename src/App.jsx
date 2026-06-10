@@ -8,6 +8,8 @@ import SubmissionsPage from './pages/SubmissionsPage';
 import RoomPage from './pages/RoomPage';
 import ResultsPage from './pages/ResultsPage';
 import PracticePage from './pages/PracticePage';
+import MatchmakingPage from './pages/MatchmakingPage';
+
 
 export default function App() {
   return (
@@ -65,8 +67,18 @@ export default function App() {
             }
           />
 
+          <Route
+            path="/matchmaking"
+            element={
+              <ProtectedRoute>
+                <MatchmakingPage />
+              </ProtectedRoute>
+            }
+          />
+
           {/* Catch-all */}
           <Route path="*" element={<Navigate to="/" replace />} />
+
         </Routes>
       </BrowserRouter>
     </AuthProvider>
