@@ -167,10 +167,18 @@ export default function DuelPage() {
     problemId: stateProblemId = null,
     opponent = { name: 'Waiting…' },
     durationSec = 30 * 60,
+    // fromMatchmaking = true means this is a ranked public match
+    fromMatchmaking = false,
   } = location.state || {};
 
   // Prefer nav-state username over Firebase (allows lobby to set a handle)
   const displayName = (location.state?.username) || user?.displayName || user?.email?.split('@')[0] || 'Anonymous';
+
+  // 'public' for ranked arena matches, 'private' for room-code duels
+  const matchType = fromMatchmaking ? 'public' : 'private';
+
+  // Track how many times the current user has submitted in this match
+  const submitCountRef = useRef(0);
 
   const [room, setRoom] = useState(null);
   const [roomNotFound, setRoomNotFound] = useState(false);
@@ -318,26 +326,35 @@ export default function DuelPage() {
               }
             }
 
+            const isDraw = winnerId === 'tie';
             const durationSeconds = Math.round(elapsedMs / 1000);
             const completedAt = serverTimestamp();
+            const allPlayerIds = Object.keys(room.participants);
 
-            // Build participants list
-            const finalParticipants = participantsList.map((p) => ({
-              userId: p.userId,
-              score: p.score ?? 0,
-              testCasesPassed: p.testCasesPassed ?? p.score ?? 0,
-              progress: p.progress ?? 0,
-              bestCode: p.bestCode ?? '',
-              solved: p.solved ?? false,
-              surrendered: p.surrendered ?? false,
-            }));
+            // Build participants list with code + language + submitCount
+            const finalParticipants = participantsList.map((p) => {
+              const isCurrent = p.userId === user.uid;
+              return {
+                userId: p.userId,
+                score: p.score ?? 0,
+                testCasesPassed: p.testCasesPassed ?? p.score ?? 0,
+                progress: p.progress ?? 0,
+                bestCode: p.bestCode ?? p.lastCode ?? '',
+                code: p.lastCode ?? p.bestCode ?? (isCurrent ? code : ''),
+                language: p.language ?? (isCurrent ? lang : ''),
+                solved: p.solved ?? false,
+                surrendered: p.surrendered ?? false,
+                submitCount: p.submitCount ?? (isCurrent ? submitCountRef.current : 0),
+              };
+            });
 
             // Write match document to matches collection
             const matchRef = await addDoc(collection(db, 'matches'), {
               roomCode: room.roomCode,
               problemId: room.problemId,
+              matchType,
               winnerId,
-              participantIds: Object.keys(room.participants),
+              participantIds: allPlayerIds,
               completionReason: 'timeout',
               startedAt: room.startedAt,
               completedAt,
@@ -352,6 +369,23 @@ export default function DuelPage() {
               matchId: matchRef.id,
               completedAt,
             });
+
+            // Trigger ELO update (fire-and-forget)
+            const idToken = await user.getIdToken();
+            fetch(`${API_BASE}/api/matches/complete`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${idToken}` },
+              body: JSON.stringify({
+                matchId: matchRef.id,
+                roomId,
+                matchType,
+                isDraw,
+                player1Id: allPlayerIds[0],
+                player2Id: allPlayerIds[1] ?? allPlayerIds[0],
+                ...(isDraw ? {} : { winnerId, loserId: allPlayerIds.find(id => id !== winnerId) }),
+              }),
+            }).catch((e) => console.warn('[DuelPage] ELO trigger failed (non-fatal):', e.message));
+
           } catch (err) {
             console.error('Failed to end match on timeout:', err);
           }
@@ -360,7 +394,7 @@ export default function DuelPage() {
     }, 1000);
 
     return () => clearInterval(interval);
-  }, [room?.startedAt, room?.creatorId, room?.participants, room?.status, room?.roomCode, room?.problemId, user, roomId]);
+  }, [room?.startedAt, room?.creatorId, room?.participants, room?.status, room?.roomCode, room?.problemId, user, roomId, matchType, code, lang, API_BASE]);
 
   // UI States
   const [editorFull, setEditorFull] = useState(false);
@@ -524,6 +558,7 @@ export default function DuelPage() {
 
       if (isMatchOver) {
         const winnerId = otherActivePlayers.length === 1 ? otherActivePlayers[0].userId : 'tie';
+        const isDraw = winnerId === 'tie';
 
         const finalParticipants = participantsList.map((p) => {
           const isCurrent = p.userId === user.uid;
@@ -532,17 +567,23 @@ export default function DuelPage() {
             score: isCurrent ? 0 : (p.score ?? 0),
             testCasesPassed: isCurrent ? 0 : (p.testCasesPassed ?? p.score ?? 0),
             progress: isCurrent ? 0 : (p.progress ?? 0),
-            bestCode: isCurrent ? code : (p.bestCode ?? ''),
+            bestCode: isCurrent ? code : (p.bestCode ?? p.lastCode ?? ''),
+            code: isCurrent ? code : (p.lastCode ?? p.bestCode ?? ''),
+            language: isCurrent ? lang : (p.language ?? ''),
             solved: isCurrent ? false : (p.solved ?? false),
             surrendered: isCurrent ? true : (p.surrendered ?? false),
+            submitCount: isCurrent ? submitCountRef.current : (p.submitCount ?? 0),
           };
         });
+
+        const allPlayerIds = Object.keys(room.participants);
 
         const matchRef = await addDoc(collection(db, 'matches'), {
           roomCode: room.roomCode,
           problemId: room.problemId,
+          matchType,
           winnerId,
-          participantIds: Object.keys(room.participants),
+          participantIds: allPlayerIds,
           completionReason: 'surrender',
           startedAt: room.startedAt,
           completedAt,
@@ -556,11 +597,49 @@ export default function DuelPage() {
           [`participants.${user.uid}.progress`]: 0,
           [`participants.${user.uid}.solved`]: false,
           [`participants.${user.uid}.surrendered`]: true,
+          [`participants.${user.uid}.code`]: code,
+          [`participants.${user.uid}.language`]: lang,
+          [`participants.${user.uid}.submitCount`]: submitCountRef.current,
           status: 'completed',
           winnerId,
           matchId: matchRef.id,
           completedAt,
         });
+
+        // Trigger ELO update (fire-and-forget)
+        const survivorId = isDraw ? null : winnerId;
+        const defeatedId = isDraw ? null : user.uid;
+        if (survivorId && defeatedId) {
+          const idToken = await user.getIdToken();
+          fetch(`${API_BASE}/api/matches/complete`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${idToken}` },
+            body: JSON.stringify({
+              matchId: matchRef.id,
+              roomId,
+              matchType,
+              isDraw: false,
+              player1Id: survivorId,
+              player2Id: defeatedId,
+              winnerId: survivorId,
+              loserId: defeatedId,
+            }),
+          }).catch((e) => console.warn('[DuelPage] ELO trigger failed (non-fatal):', e.message));
+        } else if (isDraw) {
+          const idToken = await user.getIdToken();
+          fetch(`${API_BASE}/api/matches/complete`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${idToken}` },
+            body: JSON.stringify({
+              matchId: matchRef.id,
+              roomId,
+              matchType,
+              isDraw: true,
+              player1Id: allPlayerIds[0],
+              player2Id: allPlayerIds[1] ?? allPlayerIds[0],
+            }),
+          }).catch((e) => console.warn('[DuelPage] ELO trigger failed (non-fatal):', e.message));
+        }
       } else {
         await updateDoc(roomRef, {
           [`participants.${user.uid}.score`]: 0,
@@ -568,6 +647,9 @@ export default function DuelPage() {
           [`participants.${user.uid}.progress`]: 0,
           [`participants.${user.uid}.solved`]: false,
           [`participants.${user.uid}.surrendered`]: true,
+          [`participants.${user.uid}.code`]: code,
+          [`participants.${user.uid}.language`]: lang,
+          [`participants.${user.uid}.submitCount`]: submitCountRef.current,
         });
         navigate('/');
       }
@@ -585,6 +667,10 @@ export default function DuelPage() {
     setCompileError(null);
     setRunVerdict(null);
     setIsCustomRun(false);
+
+    // Increment submit count for this player
+    submitCountRef.current += 1;
+    const currentSubmitCount = submitCountRef.current;
 
     try {
       const compilerUrl = import.meta.env.VITE_COMPILER_URL || 'http://localhost:3005';
@@ -641,6 +727,9 @@ export default function DuelPage() {
           [`${userRef}.score`]: passed,
           [`${userRef}.testCasesPassed`]: passed,
           [`${userRef}.progress`]: progressVal,
+          [`${userRef}.submitCount`]: currentSubmitCount,
+          [`${userRef}.lastCode`]: code,
+          [`${userRef}.language`]: lang,
         };
         
         if (solved) {
@@ -662,18 +751,26 @@ export default function DuelPage() {
               score: isCurrent ? passed : (p.score ?? 0),
               testCasesPassed: isCurrent ? passed : (p.testCasesPassed ?? p.score ?? 0),
               progress: isCurrent ? progressVal : (p.progress ?? 0),
-              bestCode: isCurrent ? code : (p.bestCode ?? ''),
+              bestCode: isCurrent ? code : (p.bestCode ?? p.lastCode ?? ''),
+              code: isCurrent ? code : (p.lastCode ?? p.bestCode ?? ''),
+              language: isCurrent ? lang : (p.language ?? ''),
               solved: isCurrent ? true : (p.solved ?? false),
               surrendered: p.surrendered ?? false,
+              submitCount: isCurrent ? currentSubmitCount : (p.submitCount ?? 0),
             };
           });
+
+          const allPlayerIds = Object.keys(room.participants);
+          const loserIds = allPlayerIds.filter((id) => id !== user.uid);
+          const loserId = loserIds[0] ?? null;
 
           // Write match document to matches collection
           const matchRef = await addDoc(collection(db, 'matches'), {
             roomCode: room.roomCode,
             problemId: room.problemId,
+            matchType,
             winnerId: user.uid,
-            participantIds: Object.keys(room.participants),
+            participantIds: allPlayerIds,
             completionReason: 'solved',
             startedAt: room.startedAt,
             completedAt,
@@ -685,6 +782,25 @@ export default function DuelPage() {
           updateData.winnerId = user.uid;
           updateData.matchId = matchRef.id;
           updateData.completedAt = completedAt;
+
+          // Trigger ELO update via backend (fire-and-forget, non-blocking)
+          if (loserId) {
+            const idToken2 = await user.getIdToken();
+            fetch(`${API_BASE}/api/matches/complete`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${idToken2}` },
+              body: JSON.stringify({
+                matchId: matchRef.id,
+                roomId,
+                matchType,
+                isDraw: false,
+                player1Id: user.uid,
+                player2Id: loserId,
+                winnerId: user.uid,
+                loserId,
+              }),
+            }).catch((e) => console.warn('[DuelPage] ELO trigger failed (non-fatal):', e.message));
+          }
         }
 
         await updateDoc(roomRef, updateData);
@@ -702,7 +818,7 @@ export default function DuelPage() {
     } finally {
       setIsRunning(false);
     }
-  }, [problem, code, room, roomId, user, lang]);
+  }, [problem, code, room, roomId, user, lang, matchType, submitCountRef, API_BASE]);
 
   const DIFF_COLOR = { 
     Easy: 'text-brand-green bg-brand-green/10 border-brand-green/20', 

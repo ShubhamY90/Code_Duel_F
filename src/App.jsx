@@ -9,6 +9,7 @@ import RoomPage from './pages/RoomPage';
 import ResultsPage from './pages/ResultsPage';
 import PracticePage from './pages/PracticePage';
 import MatchmakingPage from './pages/MatchmakingPage';
+import MatchHistoryPage from './pages/MatchHistoryPage';
 
 
 export default function App() {
@@ -72,6 +73,15 @@ export default function App() {
             element={
               <ProtectedRoute>
                 <MatchmakingPage />
+              </ProtectedRoute>
+            }
+          />
+
+          <Route
+            path="/matches"
+            element={
+              <ProtectedRoute>
+                <MatchHistoryPage />
               </ProtectedRoute>
             }
           />

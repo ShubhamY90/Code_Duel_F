@@ -1,10 +1,19 @@
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
-import { Sword, ArrowRight } from 'lucide-react';
+import { Sword, ArrowRight, LogOut, History } from 'lucide-react';
 
 export default function Navbar({ onStartDuel }) {
   const navigate = useNavigate();
-  const { user } = useAuth();
+  const { user, logout } = useAuth();
+
+  const handleLogout = async () => {
+    try {
+      await logout();
+      navigate('/');
+    } catch (err) {
+      console.error('Logout failed:', err.message);
+    }
+  };
 
   return (
     <nav className="sticky top-0 z-50 glass-nav">
@@ -26,7 +35,7 @@ export default function Navbar({ onStartDuel }) {
           <a href="#faq" className="text-xs font-bold uppercase tracking-wider text-[#c9c7ba]/65 hover:text-white transition-colors">FAQ</a>
         </div>
 
-        <div className="flex items-center gap-4">
+        <div className="flex items-center gap-3">
           {user ? (
             <>
               <button
@@ -39,13 +48,27 @@ export default function Navbar({ onStartDuel }) {
                 onClick={() => navigate('/submissions')}
                 className="btn-outline px-4 py-2 text-xs font-bold"
               >
-                My Submissions
+                Submissions
+              </button>
+              <button
+                onClick={() => navigate('/matches')}
+                className="btn-outline px-4 py-2 text-xs font-bold flex items-center gap-1.5"
+              >
+                <History size={12} /> My Matches
               </button>
               <button
                 onClick={onStartDuel}
                 className="btn-primary px-4 py-2 text-xs font-bold shadow-[#9d1f15]/35"
               >
                 Create Duel <ArrowRight size={13} />
+              </button>
+              <button
+                id="nav-logout-btn"
+                onClick={handleLogout}
+                title="Sign out"
+                className="flex items-center gap-1.5 px-3 py-2 text-xs font-bold text-[#c9c7ba]/50 hover:text-[#9d1f15] border border-transparent hover:border-[#9d1f15]/30 rounded-xl transition-all"
+              >
+                <LogOut size={13} /> Logout
               </button>
             </>
           ) : (
